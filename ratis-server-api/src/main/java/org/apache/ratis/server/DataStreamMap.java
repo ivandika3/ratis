@@ -31,4 +31,7 @@ public interface DataStreamMap {
 
   /** Similar to {@link java.util.Map#remove(java.lang.Object). */
   CompletableFuture<DataStream> remove(ClientInvocationId invocationId);
+
+  /** Similar to {@link java.util.Map#size()}. */
+  int size();
 }

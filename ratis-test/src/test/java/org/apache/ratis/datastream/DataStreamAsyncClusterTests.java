@@ -143,6 +143,7 @@ public abstract class DataStreamAsyncClusterTests<CLUSTER extends MiniRaftCluste
         Assertions.assertFalse(s.getDataChannel().isOpen());
         DataStreamTestUtils.assertLogEntry(impl, s);
       }
+      Assertions.assertEquals(0, impl.getDataStreamMap().size());
     }
   }
 

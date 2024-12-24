@@ -51,6 +51,11 @@ class DataStreamMapImpl implements DataStreamMap {
   }
 
   @Override
+  public int size() {
+    return map.size();
+  }
+
+  @Override
   public String toString() {
     return name;
   }
