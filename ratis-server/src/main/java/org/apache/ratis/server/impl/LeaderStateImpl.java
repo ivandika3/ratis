@@ -1140,15 +1140,15 @@ class LeaderStateImpl implements LeaderState {
    * @return current readIndex.
    */
   CompletableFuture<Long> getReadIndex(Long readAfterWriteConsistentIndex) {
-    final long commitIndex = server.getRaftLog().getLastCommittedIndex();
+    final long appliedIndex = server.getState().getLastAppliedIndex();
     final long readIndex;
-    if (readAfterWriteConsistentIndex != null && readAfterWriteConsistentIndex > commitIndex) {
+    if (readAfterWriteConsistentIndex != null && readAfterWriteConsistentIndex > appliedIndex) {
       readIndex = readAfterWriteConsistentIndex;
     } else {
-      readIndex = commitIndex;
+      readIndex = appliedIndex;
     }
-    LOG.debug("readIndex={} (commitIndex={}, readAfterWriteConsistentIndex={})",
-        readIndex, commitIndex, readAfterWriteConsistentIndex);
+    LOG.debug("readIndex={} (appliedIndex={}, readAfterWriteConsistentIndex={})",
+        readIndex, appliedIndex, readAfterWriteConsistentIndex);
 
     // if group contains only one member, fast path
     if (server.getRaftConf().isSingleton()) {
