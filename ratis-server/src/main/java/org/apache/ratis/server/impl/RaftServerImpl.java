@@ -83,7 +83,6 @@ import org.apache.ratis.server.impl.LeaderElection.Phase;
 import org.apache.ratis.server.impl.RetryCacheImpl.CacheEntry;
 import org.apache.ratis.server.impl.ServerImplUtils.NavigableIndices;
 import org.apache.ratis.server.leader.LeaderState.StepDownReason;
-import org.apache.ratis.server.leader.LogAppender;
 import org.apache.ratis.server.metrics.LeaderElectionMetrics;
 import org.apache.ratis.server.metrics.RaftServerMetricsImpl;
 import org.apache.ratis.server.protocol.RaftServerAsynchronousProtocol;
@@ -213,6 +212,28 @@ class RaftServerImpl implements RaftServer.Division,
           .filter(leader -> isLeader())
           .map(LeaderStateImpl::getFollowerMatchIndices)
           .orElse(null);
+    }
+  }
+
+  private static class ReadIndexResponse {
+    private final long readIndex;
+    private final Long leaderCommitIndex;
+
+    ReadIndexResponse(long readIndex, Long leaderCommitIndex) {
+      this.readIndex = readIndex;
+      this.leaderCommitIndex = leaderCommitIndex;
+    }
+
+    long getReadIndex() {
+      return readIndex;
+    }
+
+    Long getLeaderCommitIndex() {
+      return leaderCommitIndex;
+    }
+
+    boolean hasLeaderCommitIndex() {
+      return leaderCommitIndex != null;
     }
   }
 
@@ -1085,11 +1106,21 @@ class RaftServerImpl implements RaftServer.Division,
       } else {
         replyFuture = sendReadIndexAsync(request).thenApply(reply   -> {
           if (reply.getServerReply().getSuccess()) {
-            return reply.getReadIndex();
+            return new ReadIndexResponse(reply.getReadIndex(),
+                reply.hasLeaderCommit() ? reply.getLeaderCommit() : null);
           } else {
             throw new CompletionException(new ReadIndexException(getId() +
                 ": Failed to get read index from the leader: " + reply));
           }
+        }).thenApply(readIndexResponse -> {
+          if (readIndexResponse.hasLeaderCommitIndex()) {
+            final boolean updated = state.updateCommitIndex(
+                readIndexResponse.getLeaderCommitIndex(), state.getCurrentTerm(), false);
+            if (updated) {
+              updateCommitInfoCache();
+            }
+          }
+          return readIndexResponse.getReadIndex();
         });
       }
 
@@ -1530,20 +1561,8 @@ class RaftServerImpl implements RaftServer.Division,
     }
 
     return getReadIndex(ClientProtoUtils.toRaftClientRequest(request.getClientRequest()), leader)
-        .thenApply(index -> toReadIndexReplyProto(peerId, getMemberId(), true, index))
-        .whenComplete((reply, exception) -> {
-          if (exception == null) {
-            // Leader should try to trigger heartbeat immediately after leader replies the ReadIndex to the follower
-            // so that the follower's commitIndex can be updated to the leader's commitIndex and the follower
-            // can start applying the logs up until the leader's commitIndex (instead of waiting for the next
-            // AppendEntries to happen through heartbeat or new transactions (which might increase the latency
-            // considerably)).
-            // Note that if the follower commitIndex is already equal to the leader's commitIndex, no heartbeat
-            // will be triggered, see GrpcLogAppender#isFollowerCommitBehindLastCommitIndex.
-            RaftPeerId requestorId = RaftPeerId.valueOf(reply.getServerReply().getRequestorId());
-            leader.getLogAppender(requestorId).ifPresent(LogAppender::triggerHeartbeat);
-          }
-        })
+        .thenApply(index ->
+            toReadIndexReplyProto(peerId, getMemberId(), true, index, getRaftLog().getLastCommittedIndex()))
         .exceptionally(throwable -> toReadIndexReplyProto(peerId, getMemberId()));
   }
 

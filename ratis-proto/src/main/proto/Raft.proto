@@ -250,6 +250,7 @@ message ReadIndexRequestProto {
 message ReadIndexReplyProto {
   RaftRpcReplyProto serverReply = 1;
   uint64 readIndex = 2;
+  optional uint64 leaderCommit = 3;
 }
 
 message ClientMessageEntryProto {
