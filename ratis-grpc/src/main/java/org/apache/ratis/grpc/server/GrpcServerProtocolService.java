@@ -40,11 +40,18 @@ import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
   public static final Logger LOG = LoggerFactory.getLogger(GrpcServerProtocolService.class);
+
+  private static final AtomicInteger OPEN_APPEND_ENTRIES_OBSERVERS = new AtomicInteger();
+
+  static int getOpenAppendEntriesObserverCount() {
+    return OPEN_APPEND_ENTRIES_OBSERVERS.get();
+  }
 
   private enum BatchLogKey implements BatchLogger.Key {
     COMPLETED_REQUEST,
@@ -79,11 +86,13 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
     private final AtomicReference<CompletableFuture<REPLY>> requestFuture
         = new AtomicReference<>(CompletableFuture.completedFuture(null));
     private final AtomicBoolean isClosed = new AtomicBoolean(false);
+    private final Runnable onClose;
 
-    ServerRequestStreamObserver(RaftServer.Op op, StreamObserver<REPLY> responseObserver) {
+    ServerRequestStreamObserver(RaftServer.Op op, StreamObserver<REPLY> responseObserver, Runnable onClose) {
       this.op = op;
       this.nameSupplier = MemoizedSupplier.valueOf(() -> getId() + "_" + op);
       this.responseObserver = responseObserver;
+      this.onClose = onClose;
     }
 
     String getName() {
@@ -114,6 +123,7 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
     private void handleError(Throwable e, REQUEST request) {
       GrpcUtil.warn(LOG, () -> getId() + ": Failed " + op + " request " + requestToString(request), e);
       if (isClosed.compareAndSet(false, true)) {
+        onClose.run();
         responseObserver.onError(wrapException(e, request));
       }
     }
@@ -169,6 +179,7 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
     @Override
     public void onCompleted() {
       if (isClosed.compareAndSet(false, true)) {
+        onClose.run();
         BatchLogger.print(BatchLogKey.COMPLETED_REQUEST, getName(),
             suffix -> LOG.info("{}: Completed {}, lastRequest: {} {}",
                 getId(), op, getPreviousRequestString(), suffix));
@@ -186,6 +197,7 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
     public void onError(Throwable t) {
       GrpcUtil.warn(LOG, () -> getId() + ": "+ op + " onError, lastRequest: " + getPreviousRequestString(), t);
       if (isClosed.compareAndSet(false, true)) {
+        onClose.run();
         previousOnNext.set(null);
         requestFuture.set(null);
         Status status = Status.fromThrowable(t);
@@ -245,8 +257,9 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
   @Override
   public StreamObserver<AppendEntriesRequestProto> appendEntries(
       StreamObserver<AppendEntriesReplyProto> responseObserver) {
+    OPEN_APPEND_ENTRIES_OBSERVERS.incrementAndGet();
     return new ServerRequestStreamObserver<AppendEntriesRequestProto, AppendEntriesReplyProto>(
-        RaftServerProtocol.Op.APPEND_ENTRIES, responseObserver) {
+        RaftServerProtocol.Op.APPEND_ENTRIES, responseObserver, OPEN_APPEND_ENTRIES_OBSERVERS::decrementAndGet) {
       @Override
       CompletableFuture<AppendEntriesReplyProto> process(AppendEntriesRequestProto request) throws IOException {
         return server.appendEntriesAsync(request);
@@ -283,7 +296,7 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
   public StreamObserver<InstallSnapshotRequestProto> installSnapshot(
       StreamObserver<InstallSnapshotReplyProto> responseObserver) {
     return new ServerRequestStreamObserver<InstallSnapshotRequestProto, InstallSnapshotReplyProto>(
-        RaftServerProtocol.Op.INSTALL_SNAPSHOT, responseObserver) {
+        RaftServerProtocol.Op.INSTALL_SNAPSHOT, responseObserver, () -> {}) {
       @Override
       CompletableFuture<InstallSnapshotReplyProto> process(InstallSnapshotRequestProto request) throws IOException {
         return CompletableFuture.completedFuture(server.installSnapshot(request));
