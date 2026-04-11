@@ -96,7 +96,6 @@ import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.raftlog.RaftLogIOException;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.server.storage.RaftStorageDirectory;
-import org.apache.ratis.statemachine.SnapshotInfo;
 import org.apache.ratis.statemachine.StateMachine;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.TransactionContextImpl;
@@ -121,7 +120,6 @@ import org.apache.ratis.util.function.CheckedSupplier;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -136,10 +134,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -148,15 +144,12 @@ import static org.apache.ratis.server.impl.ServerImplUtils.assertEntries;
 import static org.apache.ratis.server.impl.ServerImplUtils.assertGroup;
 import static org.apache.ratis.server.impl.ServerImplUtils.effectiveCommitIndex;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toAppendEntriesReplyProto;
-import static org.apache.ratis.server.impl.ServerProtoUtils.toReadCommittedEntriesReplyProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toReadIndexReplyProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toReadIndexRequestProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toRequestVoteReplyProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toStartLeaderElectionReplyProto;
 import static org.apache.ratis.server.util.ServerStringUtils.toAppendEntriesReplyString;
 import static org.apache.ratis.server.util.ServerStringUtils.toAppendEntriesRequestString;
-import static org.apache.ratis.server.util.ServerStringUtils.toReadCommittedEntriesReplyString;
-import static org.apache.ratis.server.util.ServerStringUtils.toReadCommittedEntriesRequestString;
 import static org.apache.ratis.server.util.ServerStringUtils.toRequestVoteReplyString;
 
 class RaftServerImpl implements RaftServer.Division,
@@ -1579,122 +1572,17 @@ class RaftServerImpl implements RaftServer.Division,
   @Override
   public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request)
       throws IOException {
-    try {
-      return readCommittedEntriesAsync(request).join();
-    } catch (CompletionException e) {
-      throw IOUtils.asIOException(JavaUtils.unwrapCompletionException(e));
-    }
+    return ServerLogSyncSupport.readCommittedEntries(this, request);
   }
 
   @Override
   public CompletableFuture<ReadCommittedEntriesReplyProto> readCommittedEntriesAsync(
       ReadCommittedEntriesRequestProto request) throws IOException {
-    final RaftRpcRequestProto rpcRequest = request.getServerRequest();
-    try {
-      final RaftPeerId requestorId = RaftPeerId.valueOf(rpcRequest.getRequestorId());
-      final RaftGroupId requestorGroupId = ProtoUtils.toRaftGroupId(rpcRequest.getRaftGroupId());
-      CodeInjectionForTesting.execute(READ_COMMITTED_ENTRIES, getId(), requestorId, request);
-
-      assertLifeCycleState(LifeCycle.States.STARTING_OR_RUNNING);
-      if (!startComplete.get()) {
-        throw new ServerNotReadyException(getMemberId() + ": The server role is not yet initialized.");
-      }
-      assertGroup(getMemberId(), requestorId, requestorGroupId);
-
-      return CompletableFuture.completedFuture(
-          readCommittedEntries(requestorId, rpcRequest.getCallId(), request.getStartIndex()));
-    } catch (Exception t) {
-      LOG.error("{}: Failed readCommittedEntries {}", getMemberId(), toReadCommittedEntriesRequestString(request), t);
-      throw IOUtils.asIOException(t);
-    }
-  }
-
-  private synchronized ReadCommittedEntriesReplyProto readCommittedEntries(
-      RaftPeerId requestorId, long callId, long startIndex) throws IOException {
-    final long currentTerm = state.getCurrentTerm();
-    final RaftPeerId leaderId = state.getLeaderId();
-    final long commitIndex = state.getLog().getLastCommittedIndex();
-    final long nextIndex = state.getNextIndex();
-    final long logStartIndex = getFirstAvailableLogIndex();
-
-    final ReadCommittedEntriesReplyProto reply;
-    if (!getInfo().isFollower()) {
-      reply = toReadCommittedEntriesReplyProto(
-          requestorId, getMemberId(), callId, ReadCommittedEntriesReplyProto.Result.NOT_LEADER,
-          currentTerm, leaderId, commitIndex, logStartIndex, getPrevious(nextIndex), nextIndex, null);
-    } else if (startIndex < logStartIndex) {
-      reply = toReadCommittedEntriesReplyProto(
-          requestorId, getMemberId(), callId, ReadCommittedEntriesReplyProto.Result.LOG_UNAVAILABLE,
-          currentTerm, leaderId, commitIndex, logStartIndex, getPrevious(logStartIndex), logStartIndex, null);
-    } else {
-      final long endExclusive = Math.min(commitIndex + 1, nextIndex);
-      final List<LogEntryProto> entries;
-      if (startIndex >= endExclusive) {
-        entries = new ArrayList<>();
-      } else {
-        entries = readCommittedEntriesFromLog(startIndex, endExclusive);
-        if (entries == null) {
-          final long currentLogStartIndex = getFirstAvailableLogIndex();
-          final ReadCommittedEntriesReplyProto unavailable = toReadCommittedEntriesReplyProto(
-              requestorId, getMemberId(), callId, ReadCommittedEntriesReplyProto.Result.LOG_UNAVAILABLE,
-              currentTerm, leaderId, commitIndex, currentLogStartIndex,
-              getPrevious(currentLogStartIndex), currentLogStartIndex, null);
-          LOG.debug("{}: readCommittedEntries reply {}", getMemberId(), toReadCommittedEntriesReplyString(unavailable));
-          return unavailable;
-        }
-      }
-
-      final long replyNextIndex = entries.isEmpty()
-          ? Math.min(startIndex, nextIndex)
-          : entries.get(entries.size() - 1).getIndex() + 1;
-      reply = toReadCommittedEntriesReplyProto(
-          requestorId, getMemberId(), callId, ReadCommittedEntriesReplyProto.Result.SUCCESS,
-          currentTerm, leaderId, commitIndex, logStartIndex,
-          getPrevious(entries.isEmpty() ? replyNextIndex : entries.get(0).getIndex()), replyNextIndex, entries);
-    }
-    LOG.debug("{}: readCommittedEntries reply {}", getMemberId(), toReadCommittedEntriesReplyString(reply));
-    return reply;
+    return ServerLogSyncSupport.readCommittedEntriesAsync(this, request);
   }
 
   CompletableFuture<Long> applyReadCommittedEntriesAsync(ReadCommittedEntriesReplyProto reply) throws IOException {
-    if (reply.getResult() != ReadCommittedEntriesReplyProto.Result.SUCCESS) {
-      return JavaUtils.completeExceptionally(new IOException("Unexpected readCommittedEntries reply: " + reply));
-    }
-
-    final RaftPeerId leaderId = reply.hasLeaderId() ? RaftPeerId.valueOf(reply.getLeaderId().getId()) : null;
-    updateListenerLeaderMetadata(leaderId, reply.getTerm(), READ_COMMITTED_ENTRIES);
-
-    final TermIndex previous = reply.hasPreviousLog() ? TermIndex.valueOf(reply.getPreviousLog()) : null;
-    return appendEntriesToLocalLog(previous, reply.getEntriesList(), reply.getCommitIndex(), state.getCurrentTerm())
-        .thenApply(result -> {
-          if (result.result != AppendResult.SUCCESS) {
-            throw new CompletionException(new RaftLogIOException(
-                "Failed to apply pulled committed entries: " + toReadCommittedEntriesReplyString(reply)));
-          }
-          return result.nextIndex;
-        });
-  }
-
-  static void logAppendEntries(boolean isHeartbeat, Supplier<String> message) {
-    if (isHeartbeat) {
-      if (LOG.isTraceEnabled()) {
-        LOG.trace("HEARTBEAT: {}", message.get());
-      }
-    } else {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(message.get());
-      }
-    }
-  }
-
-  Optional<FollowerState> updateLastRpcTime(FollowerState.UpdateType updateType) {
-    final Optional<FollowerState> fs = role.getFollowerState();
-    if (fs.isPresent() && lifeCycle.getCurrentState().isRunning()) {
-      fs.get().updateLastRpcTime(updateType);
-      return fs;
-    } else {
-      return Optional.empty();
-    }
+    return ServerLogSyncSupport.applyReadCommittedEntriesAsync(this, reply);
   }
 
   private long updateCommitInfoCache() {
@@ -1703,6 +1591,14 @@ class RaftServerImpl implements RaftServer.Division,
 
   ExecutorService getServerExecutor() {
     return serverExecutor;
+  }
+
+  boolean isStartComplete() {
+    return startComplete.get();
+  }
+
+  boolean isLifeCycleRunning() {
+    return lifeCycle.getCurrentState().isRunning();
   }
 
   private static final class LocalAppendResult {
@@ -1723,7 +1619,7 @@ class RaftServerImpl implements RaftServer.Division,
       TermIndex previous, AppendEntriesRequestProto proto) throws IOException {
     final List<LogEntryProto> entries = proto.getEntriesList();
     final boolean isHeartbeat = entries.isEmpty();
-    logAppendEntries(isHeartbeat, () -> getMemberId() + ": appendEntries* "
+    ServerLogSyncSupport.logAppendEntries(isHeartbeat, () -> getMemberId() + ": appendEntries* "
         + toAppendEntriesRequestString(proto, stateMachine::toStateMachineLogEntryString));
 
     final long leaderTerm = proto.getLeaderTerm();
@@ -1752,7 +1648,7 @@ class RaftServerImpl implements RaftServer.Division,
       if (!proto.getInitializing() && lifeCycle.compareAndTransition(State.STARTING, State.RUNNING)) {
         role.startFollowerState(this, Op.APPEND_ENTRIES);
       }
-      followerState = updateLastRpcTime(FollowerState.UpdateType.APPEND_START);
+      followerState = ServerLogSyncSupport.updateLastRpcTime(this, FollowerState.UpdateType.APPEND_START);
     }
     future.join();
     proto.getCommitInfosList().forEach(commitInfoCache::update);
@@ -1763,7 +1659,7 @@ class RaftServerImpl implements RaftServer.Division,
     }, getServerExecutor()).thenApply(result -> {
       final AppendEntriesReplyProto reply = toAppendEntriesReplyProto(leaderId, getMemberId(),
           currentTerm, result.followerCommit, result.nextIndex, result.result, callId, result.matchIndex, isHeartbeat);
-      logAppendEntries(isHeartbeat, () -> getMemberId()
+      ServerLogSyncSupport.logAppendEntries(isHeartbeat, () -> getMemberId()
           + ": appendEntries* reply " + toAppendEntriesReplyString(reply));
       return reply;
     });
@@ -1793,8 +1689,9 @@ class RaftServerImpl implements RaftServer.Division,
     }
 
     final CompletableFuture<Void> appendFuture = entries.isEmpty() ? CompletableFuture.completedFuture(null)
-        : appendLogTermIndices != null ? appendLogTermIndices.append(entries, this::appendLog)
-        : appendLog(entries);
+        : appendLogTermIndices != null
+            ? appendLogTermIndices.append(entries, e -> ServerLogSyncSupport.appendLog(this, e))
+            : ServerLogSyncSupport.appendLog(this, entries);
 
     CodeInjectionForTesting.execute(LOG_SYNC, getId(), null);
     if (!isHeartbeat) {
@@ -1815,90 +1712,15 @@ class RaftServerImpl implements RaftServer.Division,
     });
   }
 
-  private CompletableFuture<Void> appendLog(List<LogEntryProto> entries) {
-    return CompletableFuture.completedFuture(null)
-        .thenComposeAsync(dummy -> JavaUtils.allOf(state.getLog().append(entries)), serverExecutor);
-  }
-
-  private synchronized void updateListenerLeaderMetadata(RaftPeerId leaderId, long leaderTerm, Object op)
-      throws IOException {
-    Preconditions.assertTrue(getInfo().isListener(), () -> getMemberId() + " is not a listener");
-    if (leaderId != null) {
-      Preconditions.assertTrue(state.recognizeLeader(op, leaderId, leaderTerm),
-          () -> getMemberId() + ": Failed to recognize " + leaderId + " for " + op + " at term " + leaderTerm);
-    } else {
-      Preconditions.assertTrue(leaderTerm >= state.getCurrentTerm(),
-          () -> getMemberId() + ": Received stale listener metadata update for " + op
-              + ": leaderTerm=" + leaderTerm + " < currentTerm=" + state.getCurrentTerm());
-    }
-
-    final boolean metadataUpdated = state.updateCurrentTerm(leaderTerm);
-    state.setLeader(leaderId, op);
-    if (metadataUpdated) {
-      state.persistMetadata();
-    }
-  }
-
-  private long getFirstAvailableLogIndex() {
-    final long logStartIndex = state.getLog().getStartIndex();
-    return logStartIndex > RaftLog.INVALID_LOG_INDEX ? logStartIndex : state.getSnapshotIndex() + 1;
-  }
-
-  private TermIndex getPrevious(long nextIndex) {
-    if (nextIndex == RaftLog.LEAST_VALID_LOG_INDEX) {
-      return null;
-    }
-
-    final long previousIndex = nextIndex - 1;
-    final TermIndex previous = state.getLog().getTermIndex(previousIndex);
-    if (previous != null) {
-      return previous;
-    }
-
-    final SnapshotInfo snapshot = stateMachine.getLatestSnapshot();
-    if (snapshot != null) {
-      final TermIndex snapshotTermIndex = snapshot.getTermIndex();
-      if (snapshotTermIndex.getIndex() == previousIndex) {
-        return snapshotTermIndex;
+  CompletableFuture<Long> applyPulledEntriesToLocalLog(
+      TermIndex previous, List<LogEntryProto> entries, long leaderCommit, String replyString) throws IOException {
+    return appendEntriesToLocalLog(previous, entries, leaderCommit, state.getCurrentTerm()).thenApply(result -> {
+      if (result.result != AppendResult.SUCCESS) {
+        throw new CompletionException(new RaftLogIOException(
+            "Failed to apply pulled committed entries: " + replyString));
       }
-    }
-    return null;
-  }
-
-  private List<LogEntryProto> readCommittedEntriesFromLog(long startIndex, long endExclusive) throws IOException {
-    final int elementLimit = RaftServerConfigKeys.Log.Appender.bufferElementLimit(proxy.getProperties());
-    final int byteLimit = RaftServerConfigKeys.Log.Appender.bufferByteLimit(proxy.getProperties()).getSizeInt();
-    final TimeDuration readTimeout = RaftServerConfigKeys.Log.StateMachineData.readTimeout(proxy.getProperties());
-
-    final List<LogEntryProto> entries = new ArrayList<>();
-    long totalSize = 0L;
-    for (long index = startIndex; index < endExclusive; index++) {
-      final RaftLog.EntryWithData entryWithData = state.getLog().getEntryWithData(index);
-      if (entryWithData == null) {
-        if (startIndex < getFirstAvailableLogIndex()) {
-          return null;
-        }
-        throw new RaftLogIOException(getMemberId() + ": Missing committed log entry at index " + index);
-      }
-
-      final int serializedSize = entryWithData.getSerializedSize();
-      if (!entries.isEmpty()) {
-        if (elementLimit > 0 && entries.size() >= elementLimit) {
-          break;
-        }
-        if (byteLimit > 0 && totalSize + serializedSize > byteLimit) {
-          break;
-        }
-      }
-
-      try {
-        entries.add(entryWithData.getEntry(readTimeout));
-      } catch (TimeoutException e) {
-        throw new IOException(getMemberId() + ": Timed out reading committed log entry " + index, e);
-      }
-      totalSize += serializedSize;
-    }
-    return entries;
+      return result.nextIndex;
+    });
   }
 
   private long checkInconsistentAppendEntries(TermIndex previous, List<LogEntryProto> entries) {

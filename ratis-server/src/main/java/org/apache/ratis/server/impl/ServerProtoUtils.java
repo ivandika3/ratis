@@ -35,6 +35,60 @@ import java.util.Optional;
 
 /** Server proto utilities for internal use. */
 final class ServerProtoUtils {
+  static final class ReadCommittedEntriesReplyContext {
+    private final long callId;
+    private final ReadCommittedEntriesReplyProto.Result result;
+    private final long term;
+    private RaftPeerId leaderId;
+    private long commitIndex = RaftLog.INVALID_LOG_INDEX;
+    private long logStartIndex = RaftLog.INVALID_LOG_INDEX;
+    private TermIndex previous;
+    private long nextIndex = RaftLog.INVALID_LOG_INDEX;
+    private List<LogEntryProto> entries;
+
+    private ReadCommittedEntriesReplyContext(
+        long callId, ReadCommittedEntriesReplyProto.Result result, long term) {
+      this.callId = callId;
+      this.result = result;
+      this.term = term;
+    }
+
+    static ReadCommittedEntriesReplyContext newBuilder(
+        long callId, ReadCommittedEntriesReplyProto.Result result, long term) {
+      return new ReadCommittedEntriesReplyContext(callId, result, term);
+    }
+
+    ReadCommittedEntriesReplyContext setLeaderId(RaftPeerId leaderId) {
+      this.leaderId = leaderId;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setCommitIndex(long commitIndex) {
+      this.commitIndex = commitIndex;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setLogStartIndex(long logStartIndex) {
+      this.logStartIndex = logStartIndex;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setPrevious(TermIndex previous) {
+      this.previous = previous;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setNextIndex(long nextIndex) {
+      this.nextIndex = nextIndex;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setEntries(List<LogEntryProto> entries) {
+      this.entries = entries;
+      return this;
+    }
+  }
+
   private ServerProtoUtils() {}
 
   private static RaftRpcReplyProto.Builder toRaftRpcReplyProtoBuilder(
@@ -144,21 +198,19 @@ final class ServerProtoUtils {
   }
 
   static ReadCommittedEntriesReplyProto toReadCommittedEntriesReplyProto(
-      RaftPeerId requestorId, RaftGroupMemberId replyId, long callId, ReadCommittedEntriesReplyProto.Result result,
-      long term, RaftPeerId leaderId, long commitIndex, long logStartIndex, TermIndex previous, long nextIndex,
-      List<LogEntryProto> entries) {
+      RaftPeerId requestorId, RaftGroupMemberId replyId, ReadCommittedEntriesReplyContext context) {
     final RaftRpcReplyProto.Builder rpcReply = toRaftRpcReplyProtoBuilder(requestorId, replyId,
-        result == ReadCommittedEntriesReplyProto.Result.SUCCESS).setCallId(callId);
+        context.result == ReadCommittedEntriesReplyProto.Result.SUCCESS).setCallId(context.callId);
     final ReadCommittedEntriesReplyProto.Builder builder = ReadCommittedEntriesReplyProto.newBuilder()
         .setServerReply(rpcReply)
-        .setResult(result)
-        .setTerm(term)
-        .setCommitIndex(commitIndex)
-        .setLogStartIndex(logStartIndex)
-        .setNextIndex(nextIndex);
-    Optional.ofNullable(leaderId).map(RaftPeerId::getRaftPeerIdProto).ifPresent(builder::setLeaderId);
-    Optional.ofNullable(previous).map(TermIndex::toProto).ifPresent(builder::setPreviousLog);
-    Optional.ofNullable(entries).ifPresent(builder::addAllEntries);
+        .setResult(context.result)
+        .setTerm(context.term)
+        .setCommitIndex(context.commitIndex)
+        .setLogStartIndex(context.logStartIndex)
+        .setNextIndex(context.nextIndex);
+    Optional.ofNullable(context.leaderId).map(RaftPeerId::getRaftPeerIdProto).ifPresent(builder::setLeaderId);
+    Optional.ofNullable(context.previous).map(TermIndex::toProto).ifPresent(builder::setPreviousLog);
+    Optional.ofNullable(context.entries).ifPresent(builder::addAllEntries);
     return builder.build();
   }
 
