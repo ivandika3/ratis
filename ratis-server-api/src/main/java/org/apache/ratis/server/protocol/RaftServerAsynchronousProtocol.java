@@ -22,6 +22,8 @@ import org.apache.ratis.proto.RaftProtos.ReadIndexRequestProto;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
@@ -33,4 +35,7 @@ public interface RaftServerAsynchronousProtocol {
 
   CompletableFuture<ReadIndexReplyProto> readIndexAsync(ReadIndexRequestProto request)
       throws IOException;
+
+  CompletableFuture<ReadCommittedEntriesReplyProto> readCommittedEntriesAsync(
+      ReadCommittedEntriesRequestProto request) throws IOException;
 }

@@ -23,6 +23,8 @@ import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteReplyProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteRequestProto;
 import org.apache.ratis.proto.RaftProtos.StartLeaderElectionReplyProto;
@@ -34,6 +36,8 @@ public interface RaftServerProtocol {
   RequestVoteReplyProto requestVote(RequestVoteRequestProto request) throws IOException;
 
   AppendEntriesReplyProto appendEntries(AppendEntriesRequestProto request) throws IOException;
+
+  ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request) throws IOException;
 
   InstallSnapshotReplyProto installSnapshot(InstallSnapshotRequestProto request) throws IOException;
 

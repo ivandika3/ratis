@@ -52,6 +52,8 @@ class RoleInfo {
   private final AtomicReference<LeaderStateImpl> leaderState = new AtomicReference<>();
   /** Used when the peer is follower, to monitor election timeout */
   private final AtomicReference<FollowerState> followerState = new AtomicReference<>();
+  /** Used when the peer is listener, to pull committed entries from followers. */
+  private final AtomicReference<ListenerState> listenerState = new AtomicReference<>();
   /** Used when the peer is candidate, to request votes from other peers */
   private final AtomicReference<LeaderElection> leaderElection = new AtomicReference<>();
   private final AtomicBoolean pauseLeaderElection = new AtomicBoolean(false);
@@ -120,6 +122,19 @@ class RoleInfo {
     }
     LOG.info("{}: shutdown {}", id, follower);
     return follower.stopRunning();
+  }
+
+  void startListenerState(RaftServerImpl server) {
+    updateAndGet(listenerState, new ListenerState(server)).start();
+  }
+
+  CompletableFuture<Void> shutdownListenerState() {
+    final ListenerState listener = listenerState.getAndSet(null);
+    if (listener == null) {
+      return CompletableFuture.completedFuture(null);
+    }
+    LOG.info("{}: shutdown {}", id, listener);
+    return listener.stopRunning();
   }
 
   void startLeaderElection(RaftServerImpl server, boolean force) {

@@ -21,6 +21,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftRpcMessage;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteReplyProto;
 import org.apache.ratis.proto.RaftProtos.StartLeaderElectionReplyProto;
 import org.apache.ratis.util.ProtoUtils;
@@ -32,12 +33,14 @@ public class RaftServerReply implements RaftRpcMessage {
   private final RequestVoteReplyProto requestVote;
   private final InstallSnapshotReplyProto installSnapshot;
   private final StartLeaderElectionReplyProto startLeaderElection;
+  private final ReadCommittedEntriesReplyProto readCommittedEntries;
 
   RaftServerReply(AppendEntriesReplyProto a) {
     appendEntries = Objects.requireNonNull(a);
     requestVote = null;
     installSnapshot = null;
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerReply(RequestVoteReplyProto r) {
@@ -45,6 +48,7 @@ public class RaftServerReply implements RaftRpcMessage {
     requestVote = Objects.requireNonNull(r);
     installSnapshot = null;
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerReply(InstallSnapshotReplyProto i) {
@@ -52,6 +56,7 @@ public class RaftServerReply implements RaftRpcMessage {
     requestVote = null;
     installSnapshot = Objects.requireNonNull(i);
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerReply(StartLeaderElectionReplyProto i) {
@@ -59,6 +64,15 @@ public class RaftServerReply implements RaftRpcMessage {
     requestVote = null;
     installSnapshot = null;
     startLeaderElection = Objects.requireNonNull(i);
+    readCommittedEntries = null;
+  }
+
+  RaftServerReply(ReadCommittedEntriesReplyProto r) {
+    appendEntries = null;
+    requestVote = null;
+    installSnapshot = null;
+    startLeaderElection = null;
+    readCommittedEntries = Objects.requireNonNull(r);
   }
 
   boolean isAppendEntries() {
@@ -77,6 +91,10 @@ public class RaftServerReply implements RaftRpcMessage {
     return startLeaderElection != null;
   }
 
+  boolean isReadCommittedEntries() {
+    return readCommittedEntries != null;
+  }
+
   AppendEntriesReplyProto getAppendEntries() {
     return appendEntries;
   }
@@ -93,6 +111,10 @@ public class RaftServerReply implements RaftRpcMessage {
     return startLeaderElection;
   }
 
+  ReadCommittedEntriesReplyProto getReadCommittedEntries() {
+    return readCommittedEntries;
+  }
+
   @Override
   public boolean isRequest() {
     return false;
@@ -106,6 +128,8 @@ public class RaftServerReply implements RaftRpcMessage {
       return requestVote.getServerReply().getRequestorId().toStringUtf8();
     } else if (isInstallSnapshot()) {
       return installSnapshot.getServerReply().getRequestorId().toStringUtf8();
+    } else if (isReadCommittedEntries()) {
+      return readCommittedEntries.getServerReply().getRequestorId().toStringUtf8();
     } else {
       return startLeaderElection.getServerReply().getRequestorId().toStringUtf8();
     }
@@ -119,6 +143,8 @@ public class RaftServerReply implements RaftRpcMessage {
       return requestVote.getServerReply().getReplyId().toStringUtf8();
     } else if (isInstallSnapshot()) {
       return installSnapshot.getServerReply().getReplyId().toStringUtf8();
+    } else if (isReadCommittedEntries()) {
+      return readCommittedEntries.getServerReply().getReplyId().toStringUtf8();
     } else {
       return startLeaderElection.getServerReply().getReplyId().toStringUtf8();
     }
@@ -132,6 +158,8 @@ public class RaftServerReply implements RaftRpcMessage {
       return ProtoUtils.toRaftGroupId(requestVote.getServerReply().getRaftGroupId());
     } else if (isInstallSnapshot()) {
       return ProtoUtils.toRaftGroupId(installSnapshot.getServerReply().getRaftGroupId());
+    } else if (isReadCommittedEntries()) {
+      return ProtoUtils.toRaftGroupId(readCommittedEntries.getServerReply().getRaftGroupId());
     } else {
       return ProtoUtils.toRaftGroupId(startLeaderElection.getServerReply().getRaftGroupId());
     }

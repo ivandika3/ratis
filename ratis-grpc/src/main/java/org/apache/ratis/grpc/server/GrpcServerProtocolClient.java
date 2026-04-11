@@ -161,6 +161,53 @@ class GrpcServerProtocolClient implements Closeable {
     }
   }
 
+  public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request) {
+    return blockingStub.withDeadlineAfter(requestTimeoutDuration.getDuration(), requestTimeoutDuration.getUnit())
+        .readCommittedEntries(request);
+  }
+
+  void readCommittedEntries(ReadCommittedEntriesRequestProto request,
+      StreamObserver<ReadCommittedEntriesReplyProto> s) {
+    if (pool == null) {
+      asyncStub.withDeadlineAfter(requestTimeoutDuration.getDuration(), requestTimeoutDuration.getUnit())
+          .readCommittedEntries(request, s);
+    } else {
+      GrpcStubPool.Stub<RaftServerProtocolServiceStub> p;
+      try {
+        p = pool.acquire();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        s.onError(e);
+        return;
+      }
+      p.getStub().withDeadlineAfter(requestTimeoutDuration.getDuration(), requestTimeoutDuration.getUnit())
+          .readCommittedEntries(request, new StreamObserver<ReadCommittedEntriesReplyProto>() {
+            @Override
+            public void onNext(ReadCommittedEntriesReplyProto v) {
+              s.onNext(v);
+            }
+
+            @Override
+            public void onError(Throwable t) {
+              try {
+                s.onError(t);
+              } finally {
+                p.release();
+              }
+            }
+
+            @Override
+            public void onCompleted() {
+              try {
+                s.onCompleted();
+              } finally {
+                p.release();
+              }
+            }
+          });
+    }
+  }
+
   CallStreamObserver<AppendEntriesRequestProto> appendEntries(
       StreamObserver<AppendEntriesReplyProto> responseHandler, boolean isHeartbeat) {
     if (isHeartbeat && useSeparateHBChannel) {

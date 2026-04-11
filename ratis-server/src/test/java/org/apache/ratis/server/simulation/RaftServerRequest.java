@@ -21,6 +21,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftRpcMessage;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteRequestProto;
 import org.apache.ratis.proto.RaftProtos.StartLeaderElectionRequestProto;
 import org.apache.ratis.util.ProtoUtils;
@@ -30,12 +31,14 @@ class RaftServerRequest implements RaftRpcMessage {
   private final RequestVoteRequestProto requestVote;
   private final InstallSnapshotRequestProto installSnapshot;
   private final StartLeaderElectionRequestProto startLeaderElection;
+  private final ReadCommittedEntriesRequestProto readCommittedEntries;
 
   RaftServerRequest(AppendEntriesRequestProto a) {
     appendEntries = a;
     requestVote = null;
     installSnapshot = null;
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerRequest(RequestVoteRequestProto r) {
@@ -43,6 +46,7 @@ class RaftServerRequest implements RaftRpcMessage {
     requestVote = r;
     installSnapshot = null;
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerRequest(InstallSnapshotRequestProto i) {
@@ -50,6 +54,7 @@ class RaftServerRequest implements RaftRpcMessage {
     requestVote = null;
     installSnapshot = i;
     startLeaderElection = null;
+    readCommittedEntries = null;
   }
 
   RaftServerRequest(StartLeaderElectionRequestProto i) {
@@ -57,6 +62,15 @@ class RaftServerRequest implements RaftRpcMessage {
     requestVote = null;
     installSnapshot = null;
     startLeaderElection = i;
+    readCommittedEntries = null;
+  }
+
+  RaftServerRequest(ReadCommittedEntriesRequestProto r) {
+    appendEntries = null;
+    requestVote = null;
+    installSnapshot = null;
+    startLeaderElection = null;
+    readCommittedEntries = r;
   }
 
   boolean isAppendEntries() {
@@ -75,6 +89,10 @@ class RaftServerRequest implements RaftRpcMessage {
     return startLeaderElection != null;
   }
 
+  boolean isReadCommittedEntries() {
+    return readCommittedEntries != null;
+  }
+
   AppendEntriesRequestProto getAppendEntries() {
     return appendEntries;
   }
@@ -91,6 +109,10 @@ class RaftServerRequest implements RaftRpcMessage {
     return startLeaderElection;
   }
 
+  ReadCommittedEntriesRequestProto getReadCommittedEntries() {
+    return readCommittedEntries;
+  }
+
   @Override
   public boolean isRequest() {
     return true;
@@ -104,6 +126,8 @@ class RaftServerRequest implements RaftRpcMessage {
       return requestVote.getServerRequest().getRequestorId().toStringUtf8();
     } else if (isInstallSnapshot()) {
       return installSnapshot.getServerRequest().getRequestorId().toStringUtf8();
+    } else if (isReadCommittedEntries()) {
+      return readCommittedEntries.getServerRequest().getRequestorId().toStringUtf8();
     } else {
       return startLeaderElection.getServerRequest().getRequestorId().toStringUtf8();
     }
@@ -117,6 +141,8 @@ class RaftServerRequest implements RaftRpcMessage {
       return requestVote.getServerRequest().getReplyId().toStringUtf8();
     } else if (isInstallSnapshot()) {
       return installSnapshot.getServerRequest().getReplyId().toStringUtf8();
+    } else if (isReadCommittedEntries()) {
+      return readCommittedEntries.getServerRequest().getReplyId().toStringUtf8();
     } else {
       return startLeaderElection.getServerRequest().getReplyId().toStringUtf8();
     }
@@ -130,6 +156,8 @@ class RaftServerRequest implements RaftRpcMessage {
       return ProtoUtils.toRaftGroupId(requestVote.getServerRequest().getRaftGroupId());
     } else if (isInstallSnapshot()) {
       return ProtoUtils.toRaftGroupId(installSnapshot.getServerRequest().getRaftGroupId());
+    } else if (isReadCommittedEntries()) {
+      return ProtoUtils.toRaftGroupId(readCommittedEntries.getServerRequest().getRaftGroupId());
     } else {
       return ProtoUtils.toRaftGroupId(startLeaderElection.getServerRequest().getRaftGroupId());
     }

@@ -21,6 +21,8 @@ import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteReplyProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteRequestProto;
 import org.apache.ratis.proto.RaftProtos.StartLeaderElectionReplyProto;
@@ -125,6 +127,14 @@ class SimulatedServerRpc implements RaftServerRpc {
   }
 
   @Override
+  public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request)
+      throws IOException {
+    RaftServerReply reply = serverHandler.getRpc()
+        .sendRequest(new RaftServerRequest(request));
+    return reply.getReadCommittedEntries();
+  }
+
+  @Override
   public RequestVoteReplyProto requestVote(RequestVoteRequestProto request)
       throws IOException {
     RaftServerReply reply = serverHandler.getRpc()
@@ -165,6 +175,8 @@ class SimulatedServerRpc implements RaftServerRpc {
         return new RaftServerReply(server.requestVote(r.getRequestVote()));
       } else if (r.isInstallSnapshot()) {
         return new RaftServerReply(server.installSnapshot(r.getInstallSnapshot()));
+      } else if (r.isReadCommittedEntries()) {
+        return new RaftServerReply(server.readCommittedEntries(r.getReadCommittedEntries()));
       } else if (r.isStartLeaderElection()) {
         return new RaftServerReply(server.startLeaderElection(r.getStartLeaderElection()));
       } else {

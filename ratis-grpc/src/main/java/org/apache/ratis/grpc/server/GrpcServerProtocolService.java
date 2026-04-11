@@ -239,6 +239,14 @@ class GrpcServerProtocolService extends RaftServerProtocolServiceImplBase {
   }
 
   @Override
+  public void readCommittedEntries(ReadCommittedEntriesRequestProto request,
+      StreamObserver<ReadCommittedEntriesReplyProto> responseObserver) {
+    final Consumer<Throwable> warning = e -> GrpcUtil.warn(LOG,
+        () -> getId() + ": Failed readCommittedEntries " + ProtoUtils.toString(request.getServerRequest()), e);
+    GrpcUtil.asyncCall(responseObserver, () -> server.readCommittedEntriesAsync(request), Function.identity(), warning);
+  }
+
+  @Override
   public StreamObserver<AppendEntriesRequestProto> appendEntries(
       StreamObserver<AppendEntriesReplyProto> responseObserver) {
     return new ServerRequestStreamObserver<AppendEntriesRequestProto, AppendEntriesReplyProto>(

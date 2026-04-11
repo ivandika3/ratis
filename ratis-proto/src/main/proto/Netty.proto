@@ -42,6 +42,7 @@ message RaftNettyServerRequestProto {
     ratis.common.StartLeaderElectionRequestProto startLeaderElectionRequest = 10;
     ratis.common.SnapshotManagementRequestProto snapshotManagementRequest = 11;
     ratis.common.LeaderElectionManagementRequestProto leaderElectionManagementRequest = 12;
+    ratis.common.ReadCommittedEntriesRequestProto readCommittedEntriesRequest = 13;
   }
 }
 
@@ -55,5 +56,6 @@ message RaftNettyServerReplyProto {
     ratis.common.GroupInfoReplyProto groupInfoReply = 6;
     RaftNettyExceptionReplyProto exceptionReply = 7;
     ratis.common.StartLeaderElectionReplyProto startLeaderElectionReply = 8;
+    ratis.common.ReadCommittedEntriesReplyProto readCommittedEntriesReply = 9;
   }
 }

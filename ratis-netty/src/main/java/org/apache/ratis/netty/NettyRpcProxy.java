@@ -105,6 +105,8 @@ public class NettyRpcProxy implements Closeable {
         return proto.getTransferLeadershipRequest().getRpcRequest();
       case STARTLEADERELECTIONREQUEST:
         return proto.getStartLeaderElectionRequest().getServerRequest();
+      case READCOMMITTEDENTRIESREQUEST:
+        return proto.getReadCommittedEntriesRequest().getServerRequest();
       case SNAPSHOTMANAGEMENTREQUEST:
         return proto.getSnapshotManagementRequest().getRpcRequest();
       case LEADERELECTIONMANAGEMENTREQUEST:
@@ -123,6 +125,8 @@ public class NettyRpcProxy implements Closeable {
         return proto.getRequestVoteReply().getServerReply().getCallId();
       case STARTLEADERELECTIONREPLY:
         return proto.getStartLeaderElectionReply().getServerReply().getCallId();
+      case READCOMMITTEDENTRIESREPLY:
+        return proto.getReadCommittedEntriesReply().getServerReply().getCallId();
       case APPENDENTRIESREPLY:
         return proto.getAppendEntriesReply().getServerReply().getCallId();
       case INSTALLSNAPSHOTREPLY:

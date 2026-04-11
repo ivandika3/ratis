@@ -348,6 +348,22 @@ public interface RaftServerConfigKeys {
     }
   }
 
+  interface Listener {
+    String PREFIX = RaftServerConfigKeys.PREFIX + ".listener";
+
+    String SYNC_FROM_FOLLOWER_ENABLED_KEY = PREFIX + ".sync.from-follower.enabled";
+    boolean SYNC_FROM_FOLLOWER_ENABLED_DEFAULT = false;
+
+    static boolean syncFromFollowerEnabled(RaftProperties properties) {
+      return getBoolean(properties::getBoolean, SYNC_FROM_FOLLOWER_ENABLED_KEY,
+          SYNC_FROM_FOLLOWER_ENABLED_DEFAULT, getDefaultLog());
+    }
+
+    static void setSyncFromFollowerEnabled(RaftProperties properties, boolean enabled) {
+      setBoolean(properties::setBoolean, SYNC_FROM_FOLLOWER_ENABLED_KEY, enabled);
+    }
+  }
+
   interface Watch {
     String PREFIX = RaftServerConfigKeys.PREFIX + ".watch";
 

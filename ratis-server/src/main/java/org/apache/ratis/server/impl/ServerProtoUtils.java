@@ -134,6 +134,34 @@ final class ServerProtoUtils {
     return toReadIndexReplyProto(requestorId, replyId, false, RaftLog.INVALID_LOG_INDEX);
   }
 
+  static ReadCommittedEntriesRequestProto toReadCommittedEntriesRequestProto(
+      RaftGroupMemberId requestorId, RaftPeerId replyId, long startIndex) {
+    return ReadCommittedEntriesRequestProto.newBuilder()
+        .setServerRequest(ClientProtoUtils.toRaftRpcRequestProtoBuilder(requestorId, replyId)
+            .setCallId(CallId.getAndIncrement()))
+        .setStartIndex(startIndex)
+        .build();
+  }
+
+  static ReadCommittedEntriesReplyProto toReadCommittedEntriesReplyProto(
+      RaftPeerId requestorId, RaftGroupMemberId replyId, long callId, ReadCommittedEntriesReplyProto.Result result,
+      long term, RaftPeerId leaderId, long commitIndex, long logStartIndex, TermIndex previous, long nextIndex,
+      List<LogEntryProto> entries) {
+    final RaftRpcReplyProto.Builder rpcReply = toRaftRpcReplyProtoBuilder(requestorId, replyId,
+        result == ReadCommittedEntriesReplyProto.Result.SUCCESS).setCallId(callId);
+    final ReadCommittedEntriesReplyProto.Builder builder = ReadCommittedEntriesReplyProto.newBuilder()
+        .setServerReply(rpcReply)
+        .setResult(result)
+        .setTerm(term)
+        .setCommitIndex(commitIndex)
+        .setLogStartIndex(logStartIndex)
+        .setNextIndex(nextIndex);
+    Optional.ofNullable(leaderId).map(RaftPeerId::getRaftPeerIdProto).ifPresent(builder::setLeaderId);
+    Optional.ofNullable(previous).map(TermIndex::toProto).ifPresent(builder::setPreviousLog);
+    Optional.ofNullable(entries).ifPresent(builder::addAllEntries);
+    return builder.build();
+  }
+
   @SuppressWarnings("parameternumber")
   static AppendEntriesReplyProto toAppendEntriesReplyProto(
       RaftPeerId requestorId, RaftGroupMemberId replyId, long term,

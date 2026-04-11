@@ -92,6 +92,33 @@ public final class GrpcServicesImpl
       getProxies().getProxy(target).readIndex(request, s);
       return f;
     }
+
+    @Override
+    public CompletableFuture<ReadCommittedEntriesReplyProto> readCommittedEntriesAsync(
+        ReadCommittedEntriesRequestProto request) throws IOException {
+      CodeInjectionForTesting.execute(GRPC_SEND_SERVER_REQUEST, getId(), null, request);
+
+      final CompletableFuture<ReadCommittedEntriesReplyProto> f = new CompletableFuture<>();
+      final StreamObserver<ReadCommittedEntriesReplyProto> s = new StreamObserver<ReadCommittedEntriesReplyProto>() {
+        @Override
+        public void onNext(ReadCommittedEntriesReplyProto reply) {
+          f.complete(reply);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+          f.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onCompleted() {
+        }
+      };
+
+      final RaftPeerId target = RaftPeerId.valueOf(request.getServerRequest().getReplyId());
+      getProxies().getProxy(target).readCommittedEntries(request, s);
+      return f;
+    }
   }
 
   public static final class Builder {
@@ -406,6 +433,15 @@ public final class GrpcServicesImpl
   public AppendEntriesReplyProto appendEntries(AppendEntriesRequestProto request) {
     throw new UnsupportedOperationException(
         "Blocking " + JavaUtils.getCurrentStackTraceElement().getMethodName() + " call is not supported");
+  }
+
+  @Override
+  public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request)
+      throws IOException {
+    CodeInjectionForTesting.execute(GRPC_SEND_SERVER_REQUEST, getId(), null, request);
+
+    final RaftPeerId target = RaftPeerId.valueOf(request.getServerRequest().getReplyId());
+    return getProxies().getProxy(target).readCommittedEntries(request);
   }
 
   @Override

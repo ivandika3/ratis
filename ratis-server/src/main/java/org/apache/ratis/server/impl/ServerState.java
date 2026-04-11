@@ -410,7 +410,8 @@ class ServerState {
       changed |= setRaftConf(entry);
     }
 
-    if (changed && server.getRole().getCurrentRole() == RaftPeerRole.LISTENER) {
+    if (changed && server.getRole().getCurrentRole() == RaftPeerRole.LISTENER
+        && getRaftConf().containsInConf(getMemberId().getPeerId(), RaftPeerRole.FOLLOWER)) {
       server.changeToFollowerAndPersistMetadata(getCurrentTerm(), true, "setRaftConf").join();
     }
   }

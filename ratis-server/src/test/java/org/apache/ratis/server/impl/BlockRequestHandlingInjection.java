@@ -32,6 +32,7 @@ public final class BlockRequestHandlingInjection implements CodeInjectionForTest
   static {
     CodeInjectionForTesting.put(RaftServerImpl.REQUEST_VOTE, INSTANCE);
     CodeInjectionForTesting.put(RaftServerImpl.APPEND_ENTRIES, INSTANCE);
+    CodeInjectionForTesting.put(RaftServerImpl.READ_COMMITTED_ENTRIES, INSTANCE);
     CodeInjectionForTesting.put(RaftServerImpl.INSTALL_SNAPSHOT, INSTANCE);
     CodeInjectionForTesting.put(RaftServerImpl.START_LEADER_ELECTION, INSTANCE);
   }
@@ -42,6 +43,7 @@ public final class BlockRequestHandlingInjection implements CodeInjectionForTest
 
   private final Map<String, Boolean> requestors = new ConcurrentHashMap<>();
   private final Map<String, Boolean> repliers = new ConcurrentHashMap<>();
+  private final Map<String, Boolean> requestPairs = new ConcurrentHashMap<>();
 
   private BlockRequestHandlingInjection() {}
 
@@ -63,9 +65,18 @@ public final class BlockRequestHandlingInjection implements CodeInjectionForTest
     repliers.remove(replier);
   }
 
+  public void blockRequestPair(String requestor, String replier) {
+    requestPairs.put(toPairKey(requestor, replier), true);
+  }
+
+  public void unblockRequestPair(String requestor, String replier) {
+    requestPairs.remove(toPairKey(requestor, replier));
+  }
+
   public void unblockAll() {
     requestors.clear();
     repliers.clear();
+    requestPairs.clear();
   }
 
   @Override
@@ -86,14 +97,23 @@ public final class BlockRequestHandlingInjection implements CodeInjectionForTest
   }
 
   private boolean shouldBlock(Object localId, Object remoteId) {
+    if (localId != null && remoteId != null
+        && requestPairs.containsKey(toPairKey(remoteId.toString(), localId.toString()))) {
+      return true;
+    }
     return (localId != null && repliers.containsKey(localId.toString())) ||
         (remoteId != null && requestors.containsKey(remoteId.toString()));
+  }
+
+  private static String toPairKey(String requestor, String replier) {
+    return requestor + "->" + replier;
   }
 
   @Override
   public String toString() {
     return JavaUtils.getClassSimpleName(getClass())
         + ": requestors=" + requestors.keySet()
-        + ", repliers=" + repliers.keySet();
+        + ", repliers=" + repliers.keySet()
+        + ", requestPairs=" + requestPairs.keySet();
   }
 }

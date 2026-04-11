@@ -209,6 +209,15 @@ public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy,
               server.startLeaderElection(startLeaderElectionRequest);
           return RaftNettyServerReplyProto.newBuilder().setStartLeaderElectionReply(startLeaderElectionReply).build();
 
+        case READCOMMITTEDENTRIESREQUEST:
+          final ReadCommittedEntriesRequestProto readCommittedEntriesRequest = proto.getReadCommittedEntriesRequest();
+          rpcRequest = readCommittedEntriesRequest.getServerRequest();
+          final ReadCommittedEntriesReplyProto readCommittedEntriesReply =
+              server.readCommittedEntries(readCommittedEntriesRequest);
+          return RaftNettyServerReplyProto.newBuilder()
+              .setReadCommittedEntriesReply(readCommittedEntriesReply)
+              .build();
+
         case SNAPSHOTMANAGEMENTREQUEST:
           final SnapshotManagementRequestProto snapshotManagementRequest = proto.getSnapshotManagementRequest();
           rpcRequest = snapshotManagementRequest.getRpcRequest();
@@ -347,6 +356,18 @@ public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy,
         .build();
     final RaftRpcRequestProto serverRequest = request.getServerRequest();
     return sendRaftNettyServerRequestProto(serverRequest, proto).getAppendEntriesReply();
+  }
+
+  @Override
+  public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request)
+      throws IOException {
+    CodeInjectionForTesting.execute(SEND_SERVER_REQUEST, getId(), null, request);
+
+    final RaftNettyServerRequestProto proto = RaftNettyServerRequestProto.newBuilder()
+        .setReadCommittedEntriesRequest(request)
+        .build();
+    final RaftRpcRequestProto serverRequest = request.getServerRequest();
+    return sendRaftNettyServerRequestProto(serverRequest, proto).getReadCommittedEntriesReply();
   }
 
   @Override

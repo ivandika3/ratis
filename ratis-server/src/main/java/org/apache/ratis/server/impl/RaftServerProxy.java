@@ -23,6 +23,8 @@ import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.datastream.SupportedDataStreamType;
 import org.apache.ratis.proto.RaftProtos.ReadIndexRequestProto;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
@@ -663,8 +665,22 @@ class RaftServerProxy implements RaftServer {
   }
 
   @Override
+  public CompletableFuture<ReadCommittedEntriesReplyProto> readCommittedEntriesAsync(
+      ReadCommittedEntriesRequestProto request) throws IOException {
+    final RaftGroupId groupId = ProtoUtils.toRaftGroupId(request.getServerRequest().getRaftGroupId());
+    return getImplFuture(groupId)
+        .thenCompose(impl -> impl.executeSubmitServerRequestAsync(() -> impl.readCommittedEntriesAsync(request)));
+  }
+
+  @Override
   public AppendEntriesReplyProto appendEntries(AppendEntriesRequestProto request) throws IOException {
     return getImpl(request.getServerRequest()).appendEntries(request);
+  }
+
+  @Override
+  public ReadCommittedEntriesReplyProto readCommittedEntries(ReadCommittedEntriesRequestProto request)
+      throws IOException {
+    return getImpl(request.getServerRequest()).readCommittedEntries(request);
   }
 
   @Override

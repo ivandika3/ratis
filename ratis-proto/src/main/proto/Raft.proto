@@ -253,6 +253,29 @@ message ReadIndexReplyProto {
   uint64 readIndex = 2;
 }
 
+message ReadCommittedEntriesRequestProto {
+  RaftRpcRequestProto serverRequest = 1;
+  uint64 startIndex = 2;
+}
+
+message ReadCommittedEntriesReplyProto {
+  enum Result {
+    SUCCESS = 0;
+    NOT_LEADER = 1;
+    LOG_UNAVAILABLE = 2;
+  }
+
+  RaftRpcReplyProto serverReply = 1;
+  Result result = 2;
+  uint64 term = 3;
+  RaftPeerIdProto leaderId = 4;
+  uint64 commitIndex = 5;
+  uint64 logStartIndex = 6;
+  TermIndexProto previousLog = 7;
+  uint64 nextIndex = 8;
+  repeated LogEntryProto entries = 9;
+}
+
 message ClientMessageEntryProto {
   bytes content = 1;
 }

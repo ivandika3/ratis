@@ -48,6 +48,9 @@ service RaftServerProtocolService {
 
   rpc readIndex(ratis.common.ReadIndexRequestProto)
       returns(ratis.common.ReadIndexReplyProto) {}
+
+  rpc readCommittedEntries(ratis.common.ReadCommittedEntriesRequestProto)
+      returns(ratis.common.ReadCommittedEntriesReplyProto) {}
 }
 
 service AdminProtocolService {

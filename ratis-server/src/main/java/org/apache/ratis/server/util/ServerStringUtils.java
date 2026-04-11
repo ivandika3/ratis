@@ -22,6 +22,8 @@ import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
 import org.apache.ratis.proto.RaftProtos.LogEntryProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.RequestVoteReplyProto;
 import org.apache.ratis.proto.RaftProtos.StateMachineLogEntryProto;
 import org.apache.ratis.protocol.RaftGroupMemberId;
@@ -70,6 +72,28 @@ public final class ServerStringUtils {
         + ",nextIndex=" + reply.getNextIndex()
         + ",followerCommit=" + reply.getFollowerCommit()
         + ",matchIndex=" + reply.getMatchIndex();
+  }
+
+  public static String toReadCommittedEntriesRequestString(ReadCommittedEntriesRequestProto request) {
+    if (request == null) {
+      return null;
+    }
+    return ProtoUtils.toString(request.getServerRequest()) + ",startIndex=" + request.getStartIndex();
+  }
+
+  public static String toReadCommittedEntriesReplyString(ReadCommittedEntriesReplyProto reply) {
+    if (reply == null) {
+      return null;
+    }
+    return ProtoUtils.toString(reply.getServerReply())
+        + "-t" + reply.getTerm()
+        + "," + reply.getResult()
+        + ",leaderId=" + (reply.hasLeaderId() ? reply.getLeaderId().getId().toStringUtf8() : null)
+        + ",commitIndex=" + reply.getCommitIndex()
+        + ",logStartIndex=" + reply.getLogStartIndex()
+        + ",previous=" + TermIndex.valueOf(reply.getPreviousLog())
+        + ",nextIndex=" + reply.getNextIndex()
+        + ",entries=" + reply.getEntriesCount();
   }
 
   public static String toInstallSnapshotRequestString(InstallSnapshotRequestProto request) {
