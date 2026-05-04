@@ -82,7 +82,8 @@ final class ServerLogSyncSupport {
       assertGroup(server.getMemberId(), requestorId, requestorGroupId);
 
       return CompletableFuture.completedFuture(
-          readCommittedEntries(server, requestorId, rpcRequest.getCallId(), request.getStartIndex()));
+          readCommittedEntries(server, requestorId, rpcRequest.getCallId(), request.getStartIndex(),
+              request.getStableConfigurationIndex()));
     } catch (Exception t) {
       LOG.error("{}: Failed readCommittedEntries {}", server.getMemberId(),
           toReadCommittedEntriesRequestString(request), t);
@@ -101,7 +102,14 @@ final class ServerLogSyncSupport {
 
     final TermIndex previous = reply.hasPreviousLog() ? TermIndex.valueOf(reply.getPreviousLog()) : null;
     return server.applyPulledEntriesToLocalLog(previous, reply.getEntriesList(), reply.getCommitIndex(),
-        toReadCommittedEntriesReplyString(reply));
+        toReadCommittedEntriesReplyString(reply)).thenApply(nextIndex -> {
+          if (!hasSameStableConfiguration(server, reply.getStableConfigurationIndex())) {
+            throw new CompletionException(new IOException(server.getMemberId()
+                + ": Rejecting readCommittedEntries reply from a different stable configuration generation"
+                + ": local=" + getStableConfigurationIndex(server) + ", reply=" + reply.getStableConfigurationIndex()));
+          }
+          return nextIndex;
+        });
   }
 
   static void logAppendEntries(boolean isHeartbeat, Supplier<String> message) {
@@ -131,7 +139,8 @@ final class ServerLogSyncSupport {
   }
 
   private static ReadCommittedEntriesReplyProto readCommittedEntries(
-      RaftServerImpl server, RaftPeerId requestorId, long callId, long startIndex) throws IOException {
+      RaftServerImpl server, RaftPeerId requestorId, long callId, long startIndex,
+      long requestStableConfigurationIndex) throws IOException {
     final ReadCommittedEntriesReplyProto reply;
     synchronized (server) {
       final ServerState state = server.getState();
@@ -140,6 +149,7 @@ final class ServerLogSyncSupport {
       final long commitIndex = state.getLog().getLastCommittedIndex();
       final long nextIndex = state.getNextIndex();
       final long logStartIndex = getFirstAvailableLogIndex(server);
+      final long stableConfigurationIndex = getStableConfigurationIndex(server);
 
       if (!server.getInfo().isFollower()) {
         reply = toReadCommittedEntriesReplyProto(requestorId, server.getMemberId(),
@@ -149,7 +159,19 @@ final class ServerLogSyncSupport {
                 .setCommitIndex(commitIndex)
                 .setLogStartIndex(logStartIndex)
                 .setPrevious(getPrevious(server, nextIndex))
-                .setNextIndex(nextIndex));
+                .setNextIndex(nextIndex)
+                .setStableConfigurationIndex(stableConfigurationIndex));
+      } else if (hasDifferentStableConfiguration(
+          startIndex, requestStableConfigurationIndex, stableConfigurationIndex)) {
+        reply = toReadCommittedEntriesReplyProto(requestorId, server.getMemberId(),
+            ServerProtoUtils.ReadCommittedEntriesReplyContext.newBuilder(callId,
+                    ReadCommittedEntriesReplyProto.Result.CONFIGURATION_MISMATCH, currentTerm)
+                .setLeaderId(leaderId)
+                .setCommitIndex(commitIndex)
+                .setLogStartIndex(logStartIndex)
+                .setPrevious(getPrevious(server, nextIndex))
+                .setNextIndex(nextIndex)
+                .setStableConfigurationIndex(stableConfigurationIndex));
       } else if (startIndex < logStartIndex) {
         reply = toReadCommittedEntriesReplyProto(requestorId, server.getMemberId(),
             ServerProtoUtils.ReadCommittedEntriesReplyContext.newBuilder(callId,
@@ -158,7 +180,8 @@ final class ServerLogSyncSupport {
                 .setCommitIndex(commitIndex)
                 .setLogStartIndex(logStartIndex)
                 .setPrevious(getPrevious(server, logStartIndex))
-                .setNextIndex(logStartIndex));
+                .setNextIndex(logStartIndex)
+                .setStableConfigurationIndex(stableConfigurationIndex));
       } else {
         final long endExclusive = Math.min(commitIndex + 1, nextIndex);
         final List<LogEntryProto> entries;
@@ -175,7 +198,8 @@ final class ServerLogSyncSupport {
                     .setCommitIndex(commitIndex)
                     .setLogStartIndex(currentLogStartIndex)
                     .setPrevious(getPrevious(server, currentLogStartIndex))
-                    .setNextIndex(currentLogStartIndex));
+                    .setNextIndex(currentLogStartIndex)
+                    .setStableConfigurationIndex(stableConfigurationIndex));
             LOG.debug("{}: readCommittedEntries reply {}", server.getMemberId(),
                 toReadCommittedEntriesReplyString(unavailable));
             return unavailable;
@@ -193,6 +217,7 @@ final class ServerLogSyncSupport {
                 .setLogStartIndex(logStartIndex)
                 .setPrevious(getPrevious(server, entries.isEmpty() ? replyNextIndex : entries.get(0).getIndex()))
                 .setNextIndex(replyNextIndex)
+                .setStableConfigurationIndex(stableConfigurationIndex)
                 .setEntries(entries));
       }
     }
@@ -226,6 +251,28 @@ final class ServerLogSyncSupport {
   private static long getFirstAvailableLogIndex(RaftServerImpl server) {
     final long logStartIndex = server.getState().getLog().getStartIndex();
     return logStartIndex > RaftLog.INVALID_LOG_INDEX ? logStartIndex : server.getState().getSnapshotIndex() + 1;
+  }
+
+  private static long getStableConfigurationIndex(RaftServerImpl server) {
+    final RaftConfigurationImpl conf = server.getRaftConf();
+    return conf != null && conf.isStable() ? conf.getLogEntryIndex() : RaftLog.INVALID_LOG_INDEX;
+  }
+
+  private static boolean hasSameStableConfiguration(RaftServerImpl server, long stableConfigurationIndex) {
+    return getStableConfigurationIndex(server) == stableConfigurationIndex;
+  }
+
+  private static boolean hasDifferentStableConfiguration(
+      long startIndex, long requestStableConfigurationIndex, long stableConfigurationIndex) {
+    if (stableConfigurationIndex == requestStableConfigurationIndex) {
+      return false;
+    }
+    if (stableConfigurationIndex == RaftLog.INVALID_LOG_INDEX) {
+      return true;
+    }
+    final boolean requestCanPullNewConfiguration = requestStableConfigurationIndex == RaftLog.INVALID_LOG_INDEX
+        || requestStableConfigurationIndex < stableConfigurationIndex;
+    return !requestCanPullNewConfiguration || startIndex > stableConfigurationIndex;
   }
 
   private static TermIndex getPrevious(RaftServerImpl server, long nextIndex) {

@@ -44,6 +44,7 @@ final class ServerProtoUtils {
     private long logStartIndex = RaftLog.INVALID_LOG_INDEX;
     private TermIndex previous;
     private long nextIndex = RaftLog.INVALID_LOG_INDEX;
+    private long stableConfigurationIndex = RaftLog.INVALID_LOG_INDEX;
     private List<LogEntryProto> entries;
 
     private ReadCommittedEntriesReplyContext(
@@ -80,6 +81,11 @@ final class ServerProtoUtils {
 
     ReadCommittedEntriesReplyContext setNextIndex(long nextIndex) {
       this.nextIndex = nextIndex;
+      return this;
+    }
+
+    ReadCommittedEntriesReplyContext setStableConfigurationIndex(long stableConfigurationIndex) {
+      this.stableConfigurationIndex = stableConfigurationIndex;
       return this;
     }
 
@@ -189,11 +195,12 @@ final class ServerProtoUtils {
   }
 
   static ReadCommittedEntriesRequestProto toReadCommittedEntriesRequestProto(
-      RaftGroupMemberId requestorId, RaftPeerId replyId, long startIndex) {
+      RaftGroupMemberId requestorId, RaftPeerId replyId, long startIndex, long stableConfigurationIndex) {
     return ReadCommittedEntriesRequestProto.newBuilder()
         .setServerRequest(ClientProtoUtils.toRaftRpcRequestProtoBuilder(requestorId, replyId)
             .setCallId(CallId.getAndIncrement()))
         .setStartIndex(startIndex)
+        .setStableConfigurationIndex(stableConfigurationIndex)
         .build();
   }
 
@@ -207,7 +214,8 @@ final class ServerProtoUtils {
         .setTerm(context.term)
         .setCommitIndex(context.commitIndex)
         .setLogStartIndex(context.logStartIndex)
-        .setNextIndex(context.nextIndex);
+        .setNextIndex(context.nextIndex)
+        .setStableConfigurationIndex(context.stableConfigurationIndex);
     Optional.ofNullable(context.leaderId).map(RaftPeerId::getRaftPeerIdProto).ifPresent(builder::setLeaderId);
     Optional.ofNullable(context.previous).map(TermIndex::toProto).ifPresent(builder::setPreviousLog);
     Optional.ofNullable(context.entries).ifPresent(builder::addAllEntries);

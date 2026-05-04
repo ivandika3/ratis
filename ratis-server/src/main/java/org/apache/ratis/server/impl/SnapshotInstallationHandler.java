@@ -56,6 +56,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.ratis.server.impl.ServerProtoUtils.toInstallSnapshotReplyProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toServerRpcProto;
+import static org.apache.ratis.server.impl.ServerLogSyncSupport.updateLastRpcTime;
 import static org.apache.ratis.server.raftlog.RaftLog.INVALID_LOG_INDEX;
 
 class SnapshotInstallationHandler {
@@ -182,7 +183,7 @@ class SnapshotInstallationHandler {
       future = server.changeToFollowerAndPersistMetadata(leaderTerm, true, Op.INSTALL_SNAPSHOT);
       state.setLeader(leaderId, Op.INSTALL_SNAPSHOT);
 
-      server.updateLastRpcTime(UpdateType.INSTALL_SNAPSHOT_START);
+      updateLastRpcTime(server, UpdateType.INSTALL_SNAPSHOT_START);
       long callId = chunk0CallId.get();
       // 1. leaderTerm < currentTerm will never come here
       // 2. leaderTerm == currentTerm && callId == request.getCallId()
@@ -229,7 +230,7 @@ class SnapshotInstallationHandler {
           chunk0CallId.set(-1);
         }
       } finally {
-        server.updateLastRpcTime(UpdateType.INSTALL_SNAPSHOT_COMPLETE);
+        updateLastRpcTime(server, UpdateType.INSTALL_SNAPSHOT_COMPLETE);
       }
     }
     if (snapshotChunkRequest.getDone()) {
@@ -257,7 +258,7 @@ class SnapshotInstallationHandler {
       }
       future = server.changeToFollowerAndPersistMetadata(leaderTerm, true, UpdateType.INSTALL_SNAPSHOT_NOTIFICATION);
       state.setLeader(leaderId, UpdateType.INSTALL_SNAPSHOT_NOTIFICATION);
-      server.updateLastRpcTime(UpdateType.INSTALL_SNAPSHOT_NOTIFICATION);
+      updateLastRpcTime(server, UpdateType.INSTALL_SNAPSHOT_NOTIFICATION);
 
       if (inProgressInstallSnapshotIndex.compareAndSet(INVALID_LOG_INDEX, firstAvailableLogIndex)) {
         LOG.info("{}: Received notification to install snapshot at index {}", getMemberId(), firstAvailableLogIndex);

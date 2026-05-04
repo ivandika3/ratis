@@ -87,6 +87,7 @@ public abstract class ListenerPullTests<CLUSTER extends MiniRaftCluster>
       Assertions.assertTrue(success.hasLeaderId());
       Assertions.assertEquals(leader.getId(), RaftPeerId.valueOf(success.getLeaderId().getId()));
       Assertions.assertEquals(committed, success.getCommitIndex());
+      Assertions.assertEquals(source.getRaftConf().getLogEntryIndex(), success.getStableConfigurationIndex());
       Assertions.assertTrue(success.getEntriesCount() > 0);
       final long firstReturnedIndex = success.getEntries(0).getIndex();
       if (firstReturnedIndex > RaftLog.LEAST_VALID_LOG_INDEX) {
@@ -104,6 +105,12 @@ public abstract class ListenerPullTests<CLUSTER extends MiniRaftCluster>
           .readCommittedEntries(newReadCommittedEntriesRequest(listener, source.getId(), 3L, RaftLog.INVALID_LOG_INDEX));
       Assertions.assertEquals(ReadCommittedEntriesReplyProto.Result.LOG_UNAVAILABLE, unavailable.getResult());
       Assertions.assertTrue(unavailable.getLogStartIndex() >= RaftLog.LEAST_VALID_LOG_INDEX);
+
+      final ReadCommittedEntriesReplyProto mismatch = RaftServerTestUtil.getServerRpc(listener)
+          .readCommittedEntries(newReadCommittedEntriesRequest(listener, source.getId(), 4L, startIndex,
+              source.getRaftConf().getLogEntryIndex() + 1));
+      Assertions.assertEquals(ReadCommittedEntriesReplyProto.Result.CONFIGURATION_MISMATCH, mismatch.getResult());
+      Assertions.assertEquals(source.getRaftConf().getLogEntryIndex(), mismatch.getStableConfigurationIndex());
     });
   }
 
@@ -271,6 +278,12 @@ public abstract class ListenerPullTests<CLUSTER extends MiniRaftCluster>
 
   private ReadCommittedEntriesRequestProto newReadCommittedEntriesRequest(
       RaftServer.Division requestor, RaftPeerId replyId, long callId, long startIndex) {
+    return newReadCommittedEntriesRequest(requestor, replyId, callId, startIndex,
+        requestor.getRaftConf().getLogEntryIndex());
+  }
+
+  private ReadCommittedEntriesRequestProto newReadCommittedEntriesRequest(
+      RaftServer.Division requestor, RaftPeerId replyId, long callId, long startIndex, long stableConfigurationIndex) {
     final RaftRpcRequestProto serverRequest = RaftRpcRequestProto.newBuilder()
         .setRequestorId(requestor.getId().toByteString())
         .setReplyId(replyId.toByteString())
@@ -280,6 +293,7 @@ public abstract class ListenerPullTests<CLUSTER extends MiniRaftCluster>
     return ReadCommittedEntriesRequestProto.newBuilder()
         .setServerRequest(serverRequest)
         .setStartIndex(startIndex)
+        .setStableConfigurationIndex(stableConfigurationIndex)
         .build();
   }
 

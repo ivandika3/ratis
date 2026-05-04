@@ -256,6 +256,7 @@ message ReadIndexReplyProto {
 message ReadCommittedEntriesRequestProto {
   RaftRpcRequestProto serverRequest = 1;
   uint64 startIndex = 2;
+  uint64 stableConfigurationIndex = 3;
 }
 
 message ReadCommittedEntriesReplyProto {
@@ -263,6 +264,7 @@ message ReadCommittedEntriesReplyProto {
     SUCCESS = 0;
     NOT_LEADER = 1;
     LOG_UNAVAILABLE = 2;
+    CONFIGURATION_MISMATCH = 3;
   }
 
   RaftRpcReplyProto serverReply = 1;
@@ -274,6 +276,7 @@ message ReadCommittedEntriesReplyProto {
   TermIndexProto previousLog = 7;
   uint64 nextIndex = 8;
   repeated LogEntryProto entries = 9;
+  uint64 stableConfigurationIndex = 10;
 }
 
 message ClientMessageEntryProto {

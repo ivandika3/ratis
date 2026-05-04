@@ -22,6 +22,7 @@ import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadCommittedEntriesRequestProto;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.util.ServerStringUtils;
 import org.apache.ratis.util.Daemon;
 import org.apache.ratis.util.JavaUtils;
@@ -96,6 +97,10 @@ class ListenerState extends Daemon {
         .collect(Collectors.toList());
   }
 
+  private long getStableConfigurationIndex(RaftConfigurationImpl conf) {
+    return conf != null && conf.isStable() ? conf.getLogEntryIndex() : RaftLog.INVALID_LOG_INDEX;
+  }
+
   private RaftPeer getCurrentSource(List<RaftPeer> followers) {
     if (followers.isEmpty()) {
       sourceIndex = 0;
@@ -136,7 +141,8 @@ class ListenerState extends Daemon {
           }
 
           final ReadCommittedEntriesRequestProto request = ServerProtoUtils.toReadCommittedEntriesRequestProto(
-              server.getMemberId(), source.getId(), server.getState().getNextIndex());
+              server.getMemberId(), source.getId(), server.getState().getNextIndex(),
+              getStableConfigurationIndex(conf));
           try {
             final ReadCommittedEntriesReplyProto reply = server.getServerRpc().readCommittedEntries(request);
             switch (reply.getResult()) {
@@ -152,6 +158,11 @@ class ListenerState extends Daemon {
                 break;
               case LOG_UNAVAILABLE:
                 logUnavailableCount++;
+                rotateSource(followers);
+                break;
+              case CONFIGURATION_MISMATCH:
+                LOG.debug("{}: source {} has a different stable configuration generation {}", this,
+                    source.getId(), reply.getStableConfigurationIndex());
                 rotateSource(followers);
                 break;
               default:

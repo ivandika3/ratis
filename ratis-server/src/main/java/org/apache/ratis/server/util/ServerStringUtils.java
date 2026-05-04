@@ -78,7 +78,8 @@ public final class ServerStringUtils {
     if (request == null) {
       return null;
     }
-    return ProtoUtils.toString(request.getServerRequest()) + ",startIndex=" + request.getStartIndex();
+    return ProtoUtils.toString(request.getServerRequest()) + ",startIndex=" + request.getStartIndex()
+        + ",stableConfigurationIndex=" + request.getStableConfigurationIndex();
   }
 
   public static String toReadCommittedEntriesReplyString(ReadCommittedEntriesReplyProto reply) {
@@ -91,6 +92,7 @@ public final class ServerStringUtils {
         + ",leaderId=" + (reply.hasLeaderId() ? reply.getLeaderId().getId().toStringUtf8() : null)
         + ",commitIndex=" + reply.getCommitIndex()
         + ",logStartIndex=" + reply.getLogStartIndex()
+        + ",stableConfigurationIndex=" + reply.getStableConfigurationIndex()
         + ",previous=" + TermIndex.valueOf(reply.getPreviousLog())
         + ",nextIndex=" + reply.getNextIndex()
         + ",entries=" + reply.getEntriesCount();
