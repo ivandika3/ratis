@@ -287,11 +287,6 @@ class RaftServerImpl implements RaftServer.Division,
     this.dataStreamMap = new DataStreamMapImpl(id);
     this.readOption = RaftServerConfigKeys.Read.option(properties);
     this.writeIndexCache = new WriteIndexCache(properties);
-    this.readIndexBatching = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
-        new ReadIndexBatching(
-            RaftServerConfigKeys.Read.ReadIndex.Batch.batchInterval(properties),
-            RaftServerConfigKeys.Read.ReadIndex.Batch.batchSize(properties),
-            this::sendReadIndexAsyncImpl) : null;
     this.transactionManager = new TransactionManager(id);
     TraceUtils.setTracerWhenEnabled(properties);
 
@@ -314,6 +309,11 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerConfigKeys.ThreadPool.clientCached(properties),
         RaftServerConfigKeys.ThreadPool.clientSize(properties),
         id + "-client");
+    this.readIndexBatching = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
+        new ReadIndexBatching(
+            serverExecutor,
+            RaftServerConfigKeys.Read.ReadIndex.Batch.batchSize(properties),
+            this::sendReadIndexAsyncImpl) : null;
     this.threadGroup = new ThreadGroup(proxy.getThreadGroup(), getMemberId().toString());
 
     this.dummySuccessReply = CompletableFuture.completedFuture(RaftClientReply.newBuilder()
@@ -1143,6 +1143,7 @@ class RaftServerImpl implements RaftServer.Division,
       return JavaUtils.completeExceptionally(getReadException("get", installSnapshot, false));
     }
     if (readIndexBatching != null
+        && !role.getLeaderState().isPresent()
         && !clientRequest.getType().getRead().getReadAfterWriteConsistent()) {
       return readIndexBatching.submit(clientRequest);
     }
