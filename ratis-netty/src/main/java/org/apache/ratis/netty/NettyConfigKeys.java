@@ -22,10 +22,12 @@ import org.apache.ratis.conf.Parameters;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.security.TlsConf;
 import org.apache.ratis.thirdparty.io.netty.util.NettyRuntime;
+import org.apache.ratis.util.NettyUtils;
 import org.apache.ratis.util.TimeDuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -33,6 +35,28 @@ import static org.apache.ratis.conf.ConfUtils.*;
 
 public interface NettyConfigKeys {
   String PREFIX = "raft.netty";
+
+  static NettyUtils.IoMode parseIoMode(String key, String value) {
+    final String normalized = value.trim().replace('-', '_').toUpperCase(Locale.ROOT);
+    try {
+      return NettyUtils.IoMode.valueOf(normalized);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Failed to parse " + key + " = " + value
+          + ". Supported values are DEFAULT, NIO, EPOLL and IO_URING.", e);
+    }
+  }
+
+  static NettyUtils.IoMode getIoMode(RaftProperties properties, String key, NettyUtils.IoMode defaultValue,
+      Consumer<String> logger) {
+    final String value = properties.getTrimmed(key);
+    final NettyUtils.IoMode mode = value != null ? parseIoMode(key, value) : defaultValue;
+    ConfUtils.logGet(key, mode, defaultValue, logger);
+    return mode;
+  }
+
+  static void setIoMode(RaftProperties properties, String key, NettyUtils.IoMode mode) {
+    set(properties::set, key, mode.name());
+  }
 
   interface Server {
     Logger LOG = LoggerFactory.getLogger(Server.class);
@@ -50,6 +74,9 @@ public interface NettyConfigKeys {
 
     String USE_EPOLL_KEY = PREFIX + ".use-epoll";
     boolean USE_EPOLL_DEFAULT = true;
+
+    String IO_MODE_KEY = PREFIX + ".io-mode";
+    NettyUtils.IoMode IO_MODE_DEFAULT = NettyUtils.IoMode.DEFAULT;
 
     static String host(RaftProperties properties) {
       return get(properties::get, HOST_KEY, HOST_DEFAULT, getDefaultLog());
@@ -74,6 +101,13 @@ public interface NettyConfigKeys {
     static void setUseEpoll(RaftProperties properties, boolean enable) {
       setBoolean(properties::setBoolean, USE_EPOLL_KEY, enable);
     }
+
+    static NettyUtils.IoMode ioMode(RaftProperties properties) {
+      return getIoMode(properties, IO_MODE_KEY, IO_MODE_DEFAULT, getDefaultLog());
+    }
+    static void setIoMode(RaftProperties properties, NettyUtils.IoMode mode) {
+      NettyConfigKeys.setIoMode(properties, IO_MODE_KEY, mode);
+    }
   }
 
   interface Client {
@@ -86,11 +120,19 @@ public interface NettyConfigKeys {
 
     String USE_EPOLL_KEY = PREFIX + ".use-epoll";
     boolean USE_EPOLL_DEFAULT = true;
+    String IO_MODE_KEY = PREFIX + ".io-mode";
+    NettyUtils.IoMode IO_MODE_DEFAULT = NettyUtils.IoMode.DEFAULT;
     static boolean useEpoll(RaftProperties properties) {
       return getBoolean(properties::getBoolean, USE_EPOLL_KEY, USE_EPOLL_DEFAULT, getDefaultLog());
     }
     static void setUseEpoll(RaftProperties properties, boolean enable) {
       setBoolean(properties::setBoolean, USE_EPOLL_KEY, enable);
+    }
+    static NettyUtils.IoMode ioMode(RaftProperties properties) {
+      return getIoMode(properties, IO_MODE_KEY, IO_MODE_DEFAULT, getDefaultLog());
+    }
+    static void setIoMode(RaftProperties properties, NettyUtils.IoMode mode) {
+      NettyConfigKeys.setIoMode(properties, IO_MODE_KEY, mode);
     }
   }
 
@@ -139,11 +181,19 @@ public interface NettyConfigKeys {
 
       String USE_EPOLL_KEY = PREFIX + ".use-epoll";
       boolean USE_EPOLL_DEFAULT = true;
+      String IO_MODE_KEY = PREFIX + ".io-mode";
+      NettyUtils.IoMode IO_MODE_DEFAULT = NettyUtils.IoMode.DEFAULT;
       static boolean useEpoll(RaftProperties properties) {
         return getBoolean(properties::getBoolean, USE_EPOLL_KEY, USE_EPOLL_DEFAULT, getDefaultLog());
       }
       static void setUseEpoll(RaftProperties properties, boolean enable) {
         setBoolean(properties::setBoolean, USE_EPOLL_KEY, enable);
+      }
+      static NettyUtils.IoMode ioMode(RaftProperties properties) {
+        return getIoMode(properties, IO_MODE_KEY, IO_MODE_DEFAULT, getDefaultLog());
+      }
+      static void setIoMode(RaftProperties properties, NettyUtils.IoMode mode) {
+        NettyConfigKeys.setIoMode(properties, IO_MODE_KEY, mode);
       }
 
       String WORKER_GROUP_SIZE_KEY = PREFIX + ".worker-group.size";
@@ -203,11 +253,19 @@ public interface NettyConfigKeys {
 
       String USE_EPOLL_KEY = PREFIX + ".use-epoll";
       boolean USE_EPOLL_DEFAULT = true;
+      String IO_MODE_KEY = PREFIX + ".io-mode";
+      NettyUtils.IoMode IO_MODE_DEFAULT = NettyUtils.IoMode.DEFAULT;
       static boolean useEpoll(RaftProperties properties) {
         return getBoolean(properties::getBoolean, USE_EPOLL_KEY, USE_EPOLL_DEFAULT, getDefaultLog());
       }
       static void setUseEpoll(RaftProperties properties, boolean enable) {
         setBoolean(properties::setBoolean, USE_EPOLL_KEY, enable);
+      }
+      static NettyUtils.IoMode ioMode(RaftProperties properties) {
+        return getIoMode(properties, IO_MODE_KEY, IO_MODE_DEFAULT, getDefaultLog());
+      }
+      static void setIoMode(RaftProperties properties, NettyUtils.IoMode mode) {
+        NettyConfigKeys.setIoMode(properties, IO_MODE_KEY, mode);
       }
 
       String BOSS_GROUP_SIZE_KEY = PREFIX + ".boss-group.size";
