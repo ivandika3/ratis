@@ -25,15 +25,18 @@ import org.apache.ratis.security.TlsConf.TrustManagerConf;
 import org.apache.ratis.thirdparty.io.netty.channel.Channel;
 import org.apache.ratis.thirdparty.io.netty.channel.ChannelFuture;
 import org.apache.ratis.thirdparty.io.netty.channel.EventLoopGroup;
+import org.apache.ratis.thirdparty.io.netty.channel.IoHandlerFactory;
+import org.apache.ratis.thirdparty.io.netty.channel.MultiThreadIoEventLoopGroup;
 import org.apache.ratis.thirdparty.io.netty.channel.ServerChannel;
 import org.apache.ratis.thirdparty.io.netty.channel.epoll.Epoll;
-import org.apache.ratis.thirdparty.io.netty.channel.epoll.EpollEventLoopGroup;
+import org.apache.ratis.thirdparty.io.netty.channel.epoll.EpollIoHandler;
 import org.apache.ratis.thirdparty.io.netty.channel.epoll.EpollServerSocketChannel;
 import org.apache.ratis.thirdparty.io.netty.channel.epoll.EpollSocketChannel;
-import org.apache.ratis.thirdparty.io.netty.channel.nio.NioEventLoopGroup;
+import org.apache.ratis.thirdparty.io.netty.channel.nio.NioIoHandler;
 import org.apache.ratis.thirdparty.io.netty.channel.socket.SocketChannel;
 import org.apache.ratis.thirdparty.io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.apache.ratis.thirdparty.io.netty.channel.socket.nio.NioSocketChannel;
+import org.apache.ratis.thirdparty.io.netty.channel.uring.IoUring;
 import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext;
 import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContextBuilder;
 import org.apache.ratis.util.ConcurrentUtils;
@@ -43,13 +46,21 @@ import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.TrustManager;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 public interface NettyUtils {
   Logger LOG = LoggerFactory.getLogger(NettyUtils.class);
   TimeDuration CLOSE_TIMEOUT = TimeDuration.valueOf(5, TimeUnit.SECONDS);
+  String EPOLL_EVENT_LOOP_GROUP_CLASS = "org.apache.ratis.thirdparty.io.netty.channel.epoll.EpollEventLoopGroup";
+  String IO_URING_IO_HANDLER_CLASS = "org.apache.ratis.thirdparty.io.netty.channel.uring.IoUringIoHandler";
+  String IO_URING_SOCKET_CHANNEL_CLASS = "org.apache.ratis.thirdparty.io.netty.channel.uring.IoUringSocketChannel";
+  String IO_URING_SERVER_SOCKET_CHANNEL_CLASS =
+      "org.apache.ratis.thirdparty.io.netty.channel.uring.IoUringServerSocketChannel";
 
   class Print {
     private static final AtomicBoolean PRINTED_EPOLL_UNAVAILABILITY_CAUSE = new AtomicBoolean();
@@ -69,16 +80,98 @@ public interface NettyUtils {
   }
 
   static EventLoopGroup newEventLoopGroup(String name, int size, boolean useEpoll) {
-    if (useEpoll) {
-      if (Epoll.isAvailable()) {
-        LOG.info("Create EpollEventLoopGroup for {}; Thread size is {}.", name, size);
-        return new EpollEventLoopGroup(size, ConcurrentUtils.newThreadFactory(name + "-"));
-      } else {
-        Print.epollUnavailability("Failed to create EpollEventLoopGroup for " + name
-            + "; fall back on NioEventLoopGroup.");
-      }
+    return newEventLoopGroup(name, size, NettyConfigKeys.IoMode.DEFAULT, useEpoll);
+  }
+
+  static EventLoopGroup newEventLoopGroup(String name, int size, NettyConfigKeys.IoMode ioMode, boolean useEpoll) {
+    final NettyConfigKeys.IoMode resolved = resolveIoMode(Objects.requireNonNull(ioMode, "ioMode == null"), useEpoll);
+    switch (resolved) {
+      case NIO:
+        return newEventLoopGroup(name, size, "NIO", NioIoHandler.newFactory(),
+            NioSocketChannel.class, NioServerSocketChannel.class);
+      case EPOLL:
+        if (Epoll.isAvailable()) {
+          return newEventLoopGroup(name, size, "EPOLL", EpollIoHandler.newFactory(),
+              EpollSocketChannel.class, EpollServerSocketChannel.class);
+        } else if (ioMode == NettyConfigKeys.IoMode.DEFAULT) {
+          Print.epollUnavailability("Failed to create EPOLL event loop group for " + name
+              + "; fall back on NIO event loop group.");
+          return newEventLoopGroup(name, size, "NIO", NioIoHandler.newFactory(),
+              NioSocketChannel.class, NioServerSocketChannel.class);
+        }
+        throw unavailable("EPOLL", name, Epoll.unavailabilityCause());
+      case IO_URING:
+        if (IoUring.isAvailable()) {
+          return newEventLoopGroup(name, size, "IO_URING", newIoUringIoHandlerFactory(),
+              loadIoUringClass(IO_URING_SOCKET_CHANNEL_CLASS, SocketChannel.class),
+              loadIoUringClass(IO_URING_SERVER_SOCKET_CHANNEL_CLASS, ServerChannel.class));
+        }
+        throw unavailable("IO_URING", name, IoUring.unavailabilityCause());
+      case DEFAULT:
+      default:
+        throw new IllegalStateException("Unexpected resolved ioMode: " + resolved);
     }
-    return new NioEventLoopGroup(size, ConcurrentUtils.newThreadFactory(name + "-"));
+  }
+
+  static IoHandlerFactory newIoUringIoHandlerFactory() {
+    try {
+      return (IoHandlerFactory) Class.forName(IO_URING_IO_HANDLER_CLASS).getMethod("newFactory").invoke(null);
+    } catch (InvocationTargetException e) {
+      throw new IllegalStateException("Failed to create IO_URING IoHandlerFactory.", e.getCause());
+    } catch (ReflectiveOperationException | LinkageError e) {
+      throw new IllegalStateException("Failed to load IO_URING IoHandlerFactory.", e);
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  static <T> Class<? extends T> loadIoUringClass(String className, Class<T> expectedType) {
+    try {
+      final Class<?> clazz = Class.forName(className);
+      if (!expectedType.isAssignableFrom(clazz)) {
+        throw new IllegalStateException(className + " is not a " + expectedType.getName());
+      }
+      return (Class<? extends T>) clazz;
+    } catch (ReflectiveOperationException | LinkageError e) {
+      throw new IllegalStateException("Failed to load " + className + ".", e);
+    }
+  }
+
+  static NettyConfigKeys.IoMode resolveIoMode(NettyConfigKeys.IoMode ioMode, boolean useEpoll) {
+    return ioMode != NettyConfigKeys.IoMode.DEFAULT ? ioMode : useEpoll ? NettyConfigKeys.IoMode.EPOLL
+        : NettyConfigKeys.IoMode.NIO;
+  }
+
+  static EventLoopGroup newEventLoopGroup(String name, int size, String transportName,
+      IoHandlerFactory ioHandlerFactory, Class<? extends SocketChannel> socketChannelClass,
+      Class<? extends ServerChannel> serverChannelClass) {
+    LOG.info("Create {} event loop group for {}; Thread size is {}.", transportName, name, size);
+    return new TransportEventLoopGroup(size, ConcurrentUtils.newThreadFactory(name + "-"), ioHandlerFactory,
+        socketChannelClass, serverChannelClass);
+  }
+
+  static IllegalStateException unavailable(String transportName, String name, Throwable cause) {
+    return new IllegalStateException("Failed to create " + transportName + " event loop group for " + name
+        + " because " + transportName + " is unavailable.", cause);
+  }
+
+  class TransportEventLoopGroup extends MultiThreadIoEventLoopGroup {
+    private final Class<? extends SocketChannel> socketChannelClass;
+    private final Class<? extends ServerChannel> serverChannelClass;
+
+    TransportEventLoopGroup(int size, ThreadFactory threadFactory, IoHandlerFactory ioHandlerFactory,
+        Class<? extends SocketChannel> socketChannelClass, Class<? extends ServerChannel> serverChannelClass) {
+      super(size, threadFactory, ioHandlerFactory);
+      this.socketChannelClass = socketChannelClass;
+      this.serverChannelClass = serverChannelClass;
+    }
+
+    Class<? extends SocketChannel> getSocketChannelClass() {
+      return socketChannelClass;
+    }
+
+    Class<? extends ServerChannel> getServerChannelClass() {
+      return serverChannelClass;
+    }
   }
 
   static void setTrustManager(SslContextBuilder b, TrustManagerConf trustManagerConfig) {
@@ -173,13 +266,21 @@ public interface NettyUtils {
   }
 
   static Class<? extends SocketChannel> getSocketChannelClass(EventLoopGroup eventLoopGroup) {
-    return eventLoopGroup instanceof EpollEventLoopGroup ?
-        EpollSocketChannel.class : NioSocketChannel.class;
+    if (eventLoopGroup instanceof TransportEventLoopGroup) {
+      return ((TransportEventLoopGroup) eventLoopGroup).getSocketChannelClass();
+    }
+    return isEpollEventLoopGroup(eventLoopGroup) ? EpollSocketChannel.class : NioSocketChannel.class;
   }
 
   static Class<? extends ServerChannel> getServerChannelClass(EventLoopGroup eventLoopGroup) {
-    return eventLoopGroup instanceof EpollEventLoopGroup ?
-        EpollServerSocketChannel.class : NioServerSocketChannel.class;
+    if (eventLoopGroup instanceof TransportEventLoopGroup) {
+      return ((TransportEventLoopGroup) eventLoopGroup).getServerChannelClass();
+    }
+    return isEpollEventLoopGroup(eventLoopGroup) ? EpollServerSocketChannel.class : NioServerSocketChannel.class;
+  }
+
+  static boolean isEpollEventLoopGroup(EventLoopGroup eventLoopGroup) {
+    return EPOLL_EVENT_LOOP_GROUP_CLASS.equals(eventLoopGroup.getClass().getName());
   }
 
   static void closeChannel(Channel channel, String name) {

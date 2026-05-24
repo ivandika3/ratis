@@ -116,9 +116,10 @@ public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy,
       }
     };
 
+    final NettyConfigKeys.IoMode ioMode = NettyConfigKeys.Server.ioMode(server.getProperties());
     final boolean useEpoll = NettyConfigKeys.Server.useEpoll(server.getProperties());
-    this.bossGroup = NettyUtils.newEventLoopGroup(CLASS_NAME + "-bossGroup", 0, useEpoll);
-    this.workerGroup = NettyUtils.newEventLoopGroup(CLASS_NAME + "-workerGroup",0, useEpoll);
+    this.bossGroup = NettyUtils.newEventLoopGroup(CLASS_NAME + "-bossGroup", 0, ioMode, useEpoll);
+    this.workerGroup = NettyUtils.newEventLoopGroup(CLASS_NAME + "-workerGroup", 0, ioMode, useEpoll);
 
     final String host = NettyConfigKeys.Server.host(server.getProperties());
     final int port = NettyConfigKeys.Server.port(server.getProperties());

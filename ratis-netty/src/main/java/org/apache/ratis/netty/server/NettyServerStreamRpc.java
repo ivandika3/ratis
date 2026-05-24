@@ -170,11 +170,12 @@ public class NettyServerStreamRpc implements DataStreamServerRpc {
 
     this.proxies = new ProxiesPool(name, properties, parameters);
 
+    final NettyConfigKeys.IoMode ioMode = NettyConfigKeys.DataStream.Server.ioMode(properties);
     final boolean useEpoll = NettyConfigKeys.DataStream.Server.useEpoll(properties);
     this.bossGroup = NettyUtils.newEventLoopGroup(name + "-bossGroup",
-        NettyConfigKeys.DataStream.Server.bossGroupSize(properties), useEpoll);
+        NettyConfigKeys.DataStream.Server.bossGroupSize(properties), ioMode, useEpoll);
     this.workerGroup = NettyUtils.newEventLoopGroup(name + "-workerGroup",
-        NettyConfigKeys.DataStream.Server.workerGroupSize(properties), useEpoll);
+        NettyConfigKeys.DataStream.Server.workerGroupSize(properties), ioMode, useEpoll);
 
     final TlsConf tlsConf = NettyConfigKeys.DataStream.Server.tlsConf(parameters);
     final SslContext sslContext = NettyUtils.buildSslContextForServer(tlsConf);

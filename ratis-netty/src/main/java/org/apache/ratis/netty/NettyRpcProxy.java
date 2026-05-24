@@ -60,6 +60,7 @@ public class NettyRpcProxy implements Closeable {
 
     public PeerMap(String name, RaftProperties properties) {
       this(name, properties, NettyUtils.newEventLoopGroup(name, 0,
+          NettyConfigKeys.Client.ioMode(properties),
           NettyConfigKeys.Client.useEpoll(properties)));
     }
 
