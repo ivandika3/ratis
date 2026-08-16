@@ -1,0 +1,24 @@
+# Leiningen build artifacts
+target/
+.lein-*
+pom.xml
+pom.xml.asc
+
+# Jepsen test artifacts
+store/
+jepsen.log
+*.edn
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+*~ 
