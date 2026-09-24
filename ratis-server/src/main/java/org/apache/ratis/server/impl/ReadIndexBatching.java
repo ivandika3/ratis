@@ -24,13 +24,13 @@ import org.apache.ratis.util.JavaUtils;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 /**
@@ -46,9 +46,9 @@ class ReadIndexBatching {
 
   /** Guarded by {@code this}. */
   private final Queue<Pending> pending = new ArrayDeque<>();
-  /** Guarded by {@code this}. */
-  private final HashSet<Batch> inFlight = new HashSet<>();
-  /** Guarded by {@code this}; at most one drain task is scheduled or running. */
+  /** Guarded by {@code this}; owns the only ReadIndex RPC slot until its reply fanout completes. */
+  private Batch inFlight;
+  /** Guarded by {@code this}; prevents duplicate drain tasks before one claims pending requests. */
   private boolean drainScheduled;
   /** Guarded by {@code this}. */
   private boolean closed;
@@ -68,7 +68,7 @@ class ReadIndexBatching {
         return JavaUtils.completeExceptionally(newClosedException());
       }
       pending.add(new Pending(request, future));
-      schedule = !drainScheduled;
+      schedule = inFlight == null && !drainScheduled;
       if (schedule) {
         drainScheduled = true;
       }
@@ -86,7 +86,7 @@ class ReadIndexBatching {
 
   private void close(Throwable throwable) {
     final List<Pending> queued;
-    final List<Batch> running;
+    final Batch running;
     synchronized (this) {
       if (closed) {
         return;
@@ -95,11 +95,13 @@ class ReadIndexBatching {
       drainScheduled = false;
       queued = new ArrayList<>(pending);
       pending.clear();
-      running = new ArrayList<>(inFlight);
-      inFlight.clear();
+      running = inFlight;
+      inFlight = null;
     }
     queued.forEach(p -> p.future.completeExceptionally(throwable));
-    running.forEach(batch -> batch.completeExceptionally(throwable));
+    if (running != null) {
+      running.completeExceptionally(throwable);
+    }
   }
 
   private void scheduleDrain() {
@@ -117,30 +119,16 @@ class ReadIndexBatching {
   private void drain() {
     final Batch batch;
     synchronized (this) {
-      if (closed || pending.isEmpty()) {
+      if (closed || pending.isEmpty() || inFlight != null) {
         drainScheduled = false;
         return;
       }
       batch = pollBatch();
-      inFlight.add(batch);
+      inFlight = batch;
+      drainScheduled = false;
     }
 
-    batch.send(readIndexAsyncImpl, () -> onBatchDone(batch));
-
-    final boolean scheduleNext;
-    synchronized (this) {
-      if (closed) {
-        scheduleNext = false;
-      } else if (pending.isEmpty()) {
-        drainScheduled = false;
-        scheduleNext = false;
-      } else {
-        scheduleNext = true;
-      }
-    }
-    if (scheduleNext) {
-      scheduleDrain();
-    }
+    batch.send(readIndexAsyncImpl, (reply, throwable) -> scheduleCompletion(batch, reply, throwable));
   }
 
   private Batch pollBatch() {
@@ -155,9 +143,33 @@ class ReadIndexBatching {
     return new Batch(batch);
   }
 
-  private void onBatchDone(Batch batch) {
+  private void scheduleCompletion(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
+    try {
+      executor.execute(() -> complete(batch, reply, throwable));
+    } catch (RejectedExecutionException e) {
+      close(new ReadIndexException("Failed to schedule ReadIndex batch completion.", e));
+    }
+  }
+
+  private void complete(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
+    if (throwable != null) {
+      batch.completeExceptionally(JavaUtils.unwrapCompletionException(throwable));
+    } else {
+      batch.complete(reply);
+    }
+
+    final boolean schedule;
     synchronized (this) {
-      inFlight.remove(batch);
+      if (inFlight == batch) {
+        inFlight = null;
+      }
+      schedule = !closed && !pending.isEmpty() && !drainScheduled;
+      if (schedule) {
+        drainScheduled = true;
+      }
+    }
+    if (schedule) {
+      scheduleDrain();
     }
   }
 
@@ -180,7 +192,7 @@ class ReadIndexBatching {
     }
 
     void send(Function<RaftClientRequest, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl,
-        Runnable onComplete) {
+        BiConsumer<ReadIndexReplyProto, Throwable> completion) {
       if (pending.isEmpty()) {
         return;
       }
@@ -195,22 +207,11 @@ class ReadIndexBatching {
         // per-client write-index state.
         replyFuture = readIndexAsyncImpl.apply(pending.get(0).request);
       } catch (Throwable t) {
-        completeExceptionally(t);
-        onComplete.run();
+        completion.accept(null, t);
         return;
       }
 
-      replyFuture.whenComplete((reply, throwable) -> {
-        try {
-          if (throwable != null) {
-            completeExceptionally(JavaUtils.unwrapCompletionException(throwable));
-          } else {
-            complete(reply);
-          }
-        } finally {
-          onComplete.run();
-        }
-      });
+      replyFuture.whenComplete(completion);
     }
 
     private void complete(ReadIndexReplyProto reply) {
