@@ -23,4 +23,9 @@ public class TestLinearizableReadIndexBatchWithGrpc
   public boolean readIndexBatchEnabled() {
     return true;
   }
+
+  @Override
+  public int readIndexBatchMaxInFlight() {
+    return 2;
+  }
 }

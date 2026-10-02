@@ -24,8 +24,10 @@ import org.apache.ratis.util.JavaUtils;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -37,46 +39,42 @@ import java.util.function.Function;
  * Opportunistically batch follower-to-leader ReadIndex requests.
  *
  * <p>The batch is drained on the server executor without waiting for a timer. {@code batchSize}
- * is only a maximum drain cap, not a target size.
+ * is only a maximum drain cap, not a target size. Up to {@code maxInFlight} batches can be
+ * admitted, each retaining its slot until reply fanout finishes.
  */
 class ReadIndexBatching {
   private final Executor executor;
   private final int batchSize;
+  private final int maxInFlight;
   private final Function<RaftClientRequest, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl;
 
   /** Guarded by {@code this}. */
   private final Queue<Pending> pending = new ArrayDeque<>();
-  /** Guarded by {@code this}; owns the only ReadIndex RPC slot until its reply fanout completes. */
-  private Batch inFlight;
-  /** Guarded by {@code this}; prevents duplicate drain tasks before one claims pending requests. */
+  /** Guarded by {@code this}; includes batches whose replies are waiting for or running fanout. */
+  private final Set<Batch> inFlight = new HashSet<>();
+  /** Guarded by {@code this}; held from scheduling a drain until that drain finishes sending. */
   private boolean drainScheduled;
   /** Guarded by {@code this}. */
   private boolean closed;
 
-  ReadIndexBatching(Executor executor, int batchSize,
+  ReadIndexBatching(Executor executor, int batchSize, int maxInFlight,
       Function<RaftClientRequest, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl) {
     this.executor = executor;
     this.batchSize = batchSize;
+    this.maxInFlight = maxInFlight;
     this.readIndexAsyncImpl = readIndexAsyncImpl;
   }
 
   CompletableFuture<ReadIndexReplyProto> submit(RaftClientRequest request) {
     final CompletableFuture<ReadIndexReplyProto> future = new CompletableFuture<>();
-    final boolean schedule;
     synchronized (this) {
       if (closed) {
         return JavaUtils.completeExceptionally(newClosedException());
       }
       pending.add(new Pending(request, future));
-      schedule = inFlight == null && !drainScheduled;
-      if (schedule) {
-        drainScheduled = true;
-      }
     }
 
-    if (schedule) {
-      scheduleDrain();
-    }
+    scheduleDrain();
     return future;
   }
 
@@ -86,7 +84,7 @@ class ReadIndexBatching {
 
   private void close(Throwable throwable) {
     final List<Pending> queued;
-    final Batch running;
+    final List<Batch> running;
     synchronized (this) {
       if (closed) {
         return;
@@ -95,16 +93,20 @@ class ReadIndexBatching {
       drainScheduled = false;
       queued = new ArrayList<>(pending);
       pending.clear();
-      running = inFlight;
-      inFlight = null;
+      running = new ArrayList<>(inFlight);
+      inFlight.clear();
     }
     queued.forEach(p -> p.future.completeExceptionally(throwable));
-    if (running != null) {
-      running.completeExceptionally(throwable);
-    }
+    running.forEach(batch -> batch.completeExceptionally(throwable));
   }
 
   private void scheduleDrain() {
+    synchronized (this) {
+      if (closed || pending.isEmpty() || drainScheduled || inFlight.size() >= maxInFlight) {
+        return;
+      }
+      drainScheduled = true;
+    }
     try {
       executor.execute(this::drain);
     } catch (RejectedExecutionException e) {
@@ -119,16 +121,22 @@ class ReadIndexBatching {
   private void drain() {
     final Batch batch;
     synchronized (this) {
-      if (closed || pending.isEmpty() || inFlight != null) {
+      if (closed || pending.isEmpty() || inFlight.size() >= maxInFlight) {
         drainScheduled = false;
         return;
       }
       batch = pollBatch();
-      inFlight = batch;
-      drainScheduled = false;
+      inFlight.add(batch);
     }
 
-    batch.send(readIndexAsyncImpl, (reply, throwable) -> scheduleCompletion(batch, reply, throwable));
+    try {
+      batch.send(readIndexAsyncImpl, (reply, throwable) -> scheduleCompletion(batch, reply, throwable));
+    } finally {
+      synchronized (this) {
+        drainScheduled = false;
+      }
+      scheduleDrain();
+    }
   }
 
   private Batch pollBatch() {
@@ -152,23 +160,16 @@ class ReadIndexBatching {
   }
 
   private void complete(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
-    if (throwable != null) {
-      batch.completeExceptionally(JavaUtils.unwrapCompletionException(throwable));
-    } else {
-      batch.complete(reply);
-    }
-
-    final boolean schedule;
-    synchronized (this) {
-      if (inFlight == batch) {
-        inFlight = null;
+    try {
+      if (throwable != null) {
+        batch.completeExceptionally(JavaUtils.unwrapCompletionException(throwable));
+      } else {
+        batch.complete(reply);
       }
-      schedule = !closed && !pending.isEmpty() && !drainScheduled;
-      if (schedule) {
-        drainScheduled = true;
+    } finally {
+      synchronized (this) {
+        inFlight.remove(batch);
       }
-    }
-    if (schedule) {
       scheduleDrain();
     }
   }

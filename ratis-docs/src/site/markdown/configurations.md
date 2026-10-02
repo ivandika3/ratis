@@ -265,12 +265,24 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | int                                                 |
 | **Default**     | 64                                                  |
 
+| **Property**    | `raft.server.read.read-index.batch.max-in-flight` |
+|:----------------|:-------------------------------------------------|
+| **Description** | maximum number of admitted ReadIndex batches per Raft division, including reply fanout |
+| **Type**        | positive int                                     |
+| **Default**     | 1                                                |
+
 When ReadIndex batching is enabled, a follower batches plain linearizable read
 requests opportunistically and sends a single ReadIndex request for the reads
 already queued when the batch is drained. `batch.size` is a maximum cap, not a
 target size; the follower does not wait to fill a batch. Read-after-write
 requests bypass batching so that the leader can evaluate each request's
 client-specific write index.
+
+A batch retains its in-flight slot until its ReadIndex RPC and reply fanout
+finish. If capacity remains, another batch is dispatched without waiting for
+earlier batches, and batches may complete out of order. When all slots are
+occupied, new reads remain queued. This limit does not bound the pending queue
+or change gRPC channel selection.
 
 | **Property**    | `raft.server.read.leader.heartbeat-check.enabled` |
 |:----------------|:--------------------------------------------------|

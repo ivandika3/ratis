@@ -332,6 +332,15 @@ public interface RaftServerConfigKeys {
         static void setBatchSize(RaftProperties properties, int batchSize) {
           setInt(properties::setInt, BATCH_SIZE_KEY, batchSize, requireMin(1));
         }
+
+        String MAX_IN_FLIGHT_KEY = PREFIX + ".max-in-flight";
+        int MAX_IN_FLIGHT_DEFAULT = 1;
+        static int maxInFlight(RaftProperties properties) {
+          return getInt(properties::getInt, MAX_IN_FLIGHT_KEY, MAX_IN_FLIGHT_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setMaxInFlight(RaftProperties properties, int maxInFlight) {
+          setInt(properties::setInt, MAX_IN_FLIGHT_KEY, maxInFlight, requireMin(1));
+        }
       }
     }
   }
