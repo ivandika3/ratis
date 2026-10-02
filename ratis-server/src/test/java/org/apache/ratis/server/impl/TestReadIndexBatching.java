@@ -33,8 +33,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -519,6 +522,160 @@ class TestReadIndexBatching {
     assertReadIndexException(second);
     assertReadIndexException(batching.submit(null));
     Assertions.assertEquals(1, readIndexCount.get());
+  }
+
+  @Test
+  void testCloseDuringReplyFanoutSettlesRemainingMembers() throws Exception {
+    final CapturingExecutor executor = new CapturingExecutor();
+    final CompletableFuture<ReadIndexReplyProto> rpc = new CompletableFuture<>();
+    final ReadIndexBatching batching = new ReadIndexBatching(executor, 2, 1, request -> rpc);
+    final CompletableFuture<ReadIndexReplyProto> first = batching.submit(null);
+    final CompletableFuture<ReadIndexReplyProto> second = batching.submit(null);
+    final CompletableFuture<ReadIndexReplyProto> queued = batching.submit(null);
+    executor.runNext();
+
+    final CountDownLatch completing = new CountDownLatch(1);
+    final CompletableFuture<Void> resume = new CompletableFuture<>();
+    final CompletableFuture<Void> continuation = first.thenRun(() -> {
+      completing.countDown();
+      resume.join();
+    });
+    final ReadIndexReplyProto reply = ReadIndexReplyProto.getDefaultInstance();
+    rpc.complete(reply);
+    final CompletableFuture<Void> fanout = CompletableFuture.runAsync(executor::runNext);
+    try {
+      Assertions.assertTrue(completing.await(5, TimeUnit.SECONDS));
+      batching.close();
+      Assertions.assertSame(reply, first.get(5, TimeUnit.SECONDS));
+      assertReadIndexException(second);
+      assertReadIndexException(queued);
+    } finally {
+      resume.complete(null);
+      fanout.get(5, TimeUnit.SECONDS);
+      continuation.get(5, TimeUnit.SECONDS);
+      batching.close();
+    }
+    assertReadIndexException(second);
+    Assertions.assertEquals(0, executor.getTaskCount());
+  }
+
+  @Test
+  void testCloseDuringSendDoesNotWaitForSender() throws Exception {
+    final CapturingExecutor executor = new CapturingExecutor();
+    final AtomicInteger readIndexCount = new AtomicInteger();
+    final CountDownLatch sending = new CountDownLatch(1);
+    final CompletableFuture<Void> resume = new CompletableFuture<>();
+    final CompletableFuture<ReadIndexReplyProto> rpc = new CompletableFuture<>();
+    final ReadIndexBatching batching = new ReadIndexBatching(executor, 1, 2, request -> {
+      readIndexCount.incrementAndGet();
+      sending.countDown();
+      resume.join();
+      return rpc;
+    });
+    final CompletableFuture<ReadIndexReplyProto> first = batching.submit(null);
+    final CompletableFuture<ReadIndexReplyProto> second = batching.submit(null);
+    final CompletableFuture<Void> drain = CompletableFuture.runAsync(executor::runNext);
+    try {
+      Assertions.assertTrue(sending.await(5, TimeUnit.SECONDS));
+      batching.close();
+      assertReadIndexException(first);
+      assertReadIndexException(second);
+    } finally {
+      resume.complete(null);
+      drain.get(5, TimeUnit.SECONDS);
+      batching.close();
+    }
+    rpc.complete(ReadIndexReplyProto.getDefaultInstance());
+    while (executor.getTaskCount() > 0) {
+      executor.runNext();
+    }
+    Assertions.assertEquals(1, readIndexCount.get());
+    assertReadIndexException(first);
+    assertReadIndexException(second);
+  }
+
+  @Test
+  void testRequestAfterRpcStartsBelongsToAnotherBatch() throws Exception {
+    final CapturingExecutor executor = new CapturingExecutor();
+    final List<CompletableFuture<ReadIndexReplyProto>> rpcs = new ArrayList<>();
+    final ReadIndexBatching batching = new ReadIndexBatching(executor, 64, 2, request -> {
+      final CompletableFuture<ReadIndexReplyProto> rpc = new CompletableFuture<>();
+      rpcs.add(rpc);
+      return rpc;
+    });
+    final CompletableFuture<ReadIndexReplyProto> first = batching.submit(null);
+    executor.runNext();
+    final CompletableFuture<ReadIndexReplyProto> second = batching.submit(null);
+    executor.runNext();
+    Assertions.assertEquals(2, rpcs.size());
+
+    final ReadIndexReplyProto firstReply = ReadIndexReplyProto.newBuilder().setReadIndex(10).build();
+    rpcs.get(0).complete(firstReply);
+    executor.runNext();
+    Assertions.assertSame(firstReply, first.get(5, TimeUnit.SECONDS));
+    Assertions.assertFalse(second.isDone());
+
+    final ReadIndexReplyProto secondReply = ReadIndexReplyProto.newBuilder().setReadIndex(20).build();
+    rpcs.get(1).complete(secondReply);
+    executor.runNext();
+    Assertions.assertSame(secondReply, second.get(5, TimeUnit.SECONDS));
+    Assertions.assertEquals(0, executor.getTaskCount());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void testConcurrentSubmittersTerminate(boolean closeWhileSubmitting) throws Exception {
+    final ExecutorService executor = Executors.newFixedThreadPool(4);
+    final ExecutorService submitters = Executors.newFixedThreadPool(4);
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch submitted = new CountDownLatch(4);
+    final ReadIndexReplyProto reply = ReadIndexReplyProto.getDefaultInstance();
+    final ReadIndexBatching batching = new ReadIndexBatching(executor, 8, 2,
+        request -> CompletableFuture.completedFuture(reply));
+    final List<CompletableFuture<List<CompletableFuture<ReadIndexReplyProto>>>> submissions = new ArrayList<>();
+    try {
+      for (int i = 0; i < 4; i++) {
+        submissions.add(CompletableFuture.supplyAsync(() -> {
+          final List<CompletableFuture<ReadIndexReplyProto>> replies = new ArrayList<>();
+          try {
+            Assertions.assertTrue(start.await(5, TimeUnit.SECONDS));
+            replies.add(batching.submit(null));
+            submitted.countDown();
+            Assertions.assertTrue(submitted.await(5, TimeUnit.SECONDS));
+            for (int j = 1; j < 100; j++) {
+              replies.add(batching.submit(null));
+            }
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+          }
+          return replies;
+        }, submitters));
+      }
+      start.countDown();
+      Assertions.assertTrue(submitted.await(5, TimeUnit.SECONDS));
+      if (closeWhileSubmitting) {
+        batching.close();
+      }
+      for (CompletableFuture<List<CompletableFuture<ReadIndexReplyProto>>> submission : submissions) {
+        final List<CompletableFuture<ReadIndexReplyProto>> replies = submission.get(5, TimeUnit.SECONDS);
+        Assertions.assertEquals(100, replies.size());
+        for (CompletableFuture<ReadIndexReplyProto> future : replies) {
+          if (!closeWhileSubmitting || !future.isCompletedExceptionally()) {
+            Assertions.assertSame(reply, future.get(5, TimeUnit.SECONDS));
+          } else {
+            assertReadIndexException(future);
+          }
+        }
+      }
+    } finally {
+      start.countDown();
+      batching.close();
+      submitters.shutdownNow();
+      executor.shutdownNow();
+      Assertions.assertTrue(submitters.awaitTermination(5, TimeUnit.SECONDS));
+      Assertions.assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+    }
   }
 
   private static void assertReadIndexException(CompletableFuture<ReadIndexReplyProto> future) throws Exception {

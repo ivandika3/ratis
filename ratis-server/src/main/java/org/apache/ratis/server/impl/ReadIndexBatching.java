@@ -31,7 +31,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -94,6 +94,7 @@ class ReadIndexBatching {
       queued = new ArrayList<>(pending);
       pending.clear();
       running = new ArrayList<>(inFlight);
+      running.forEach(Batch::cancel);
       inFlight.clear();
     }
     queued.forEach(p -> p.future.completeExceptionally(throwable));
@@ -185,7 +186,11 @@ class ReadIndexBatching {
   }
 
   private static class Batch {
-    private final AtomicBoolean completed = new AtomicBoolean();
+    private enum State {
+      PENDING, SENDING, COMPLETED
+    }
+
+    private final AtomicReference<State> state = new AtomicReference<>(State.PENDING);
     private final List<Pending> pending;
 
     Batch(List<Pending> pending) {
@@ -197,7 +202,8 @@ class ReadIndexBatching {
       if (pending.isEmpty()) {
         return;
       }
-      if (completed.get()) {
+      // Claim dispatch atomically against cancellation; claimed sends may finish during close.
+      if (!state.compareAndSet(State.PENDING, State.SENDING)) {
         return;
       }
 
@@ -216,15 +222,19 @@ class ReadIndexBatching {
     }
 
     private void complete(ReadIndexReplyProto reply) {
-      if (completed.compareAndSet(false, true)) {
+      if (state.compareAndSet(State.SENDING, State.COMPLETED)) {
         pending.forEach(p -> p.future.complete(reply));
       }
     }
 
+    private void cancel() {
+      state.set(State.COMPLETED);
+    }
+
     private void completeExceptionally(Throwable throwable) {
-      if (completed.compareAndSet(false, true)) {
-        pending.forEach(p -> p.future.completeExceptionally(throwable));
-      }
+      cancel();
+      // A successful fanout may be blocked in a continuation; still settle its remaining members.
+      pending.forEach(p -> p.future.completeExceptionally(throwable));
     }
   }
 }
