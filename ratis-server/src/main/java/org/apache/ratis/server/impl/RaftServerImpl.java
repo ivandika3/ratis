@@ -168,6 +168,7 @@ class RaftServerImpl implements RaftServer.Division,
   static final String APPEND_ENTRIES = CLASS_NAME + ".appendEntries";
   static final String INSTALL_SNAPSHOT = CLASS_NAME + ".installSnapshot";
   static final String APPEND_TRANSACTION = CLASS_NAME + ".appendTransaction";
+  static final String READ_INDEX = CLASS_NAME + ".readIndexAsync";
   static final String LOG_SYNC = APPEND_ENTRIES + ".logComplete";
   static final String START_LEADER_ELECTION = CLASS_NAME + ".startLeaderElection";
   static final String START_COMPLETE = CLASS_NAME + ".startComplete";
@@ -246,6 +247,7 @@ class RaftServerImpl implements RaftServer.Division,
   private final CommitInfoCache commitInfoCache = new CommitInfoCache();
   private final WriteIndexCache writeIndexCache;
   private final NavigableIndices appendLogTermIndices;
+  private final ReadIndexBatching readIndexBatching;
 
   private final RaftServerJmxAdapter jmxAdapter = new RaftServerJmxAdapter(this);
   private final LeaderElectionMetrics leaderElectionMetrics;
@@ -308,6 +310,12 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerConfigKeys.ThreadPool.clientCached(properties),
         RaftServerConfigKeys.ThreadPool.clientSize(properties),
         id + "-client");
+    this.readIndexBatching = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
+        new ReadIndexBatching(
+            serverExecutor,
+            RaftServerConfigKeys.Read.ReadIndex.Batch.batchSize(properties),
+            RaftServerConfigKeys.Read.ReadIndex.Batch.maxInFlight(properties),
+            this::sendReadIndexAsyncImpl) : null;
     this.threadGroup = new ThreadGroup(proxy.getThreadGroup(), getMemberId().toString());
 
     this.dummySuccessReply = CompletableFuture.completedFuture(RaftClientReply.newBuilder()
@@ -536,6 +544,11 @@ class RaftServerImpl implements RaftServer.Division,
   public void close() {
     lifeCycle.checkStateAndClose(() -> {
       LOG.info("{}: shutdown", getMemberId());
+      try {
+        Optional.ofNullable(readIndexBatching).ifPresent(ReadIndexBatching::close);
+      } catch (Exception e) {
+        LOG.warn("{}: Failed to close ReadIndexBatching", getMemberId(), e);
+      }
       try {
         jmxAdapter.unregister();
       } catch (Exception e) {
@@ -1134,7 +1147,28 @@ class RaftServerImpl implements RaftServer.Division,
     if (installSnapshot != RaftLog.INVALID_LOG_INDEX) {
       return JavaUtils.completeExceptionally(getReadException("get", installSnapshot, false));
     }
-    final RaftPeerId leaderId = getInfo().getLeaderId();
+    if (readIndexBatching != null
+        && role.getCurrentRole() == RaftPeerRole.FOLLOWER
+        && !readRequestType.getReadAfterWriteConsistent()) {
+      return readIndexBatching.submit(clientId, readRequestType);
+    }
+    return sendReadIndexAsyncImpl(clientId, readRequestType);
+  }
+
+  private CompletableFuture<ReadIndexReplyProto> sendReadIndexAsyncImpl(
+      ClientId clientId, ReadRequestTypeProto readRequestType) {
+    final LeaderStateImpl leader;
+    final RaftPeerId leaderId;
+    // Snapshot both under the role-transition monitor, without holding it during RPC or completion.
+    synchronized (this) {
+      leader = role.getLeaderState().orElse(null);
+      leaderId = leader == null ? getInfo().getLeaderId() : null;
+    }
+    if (leader != null) {
+      return getReadIndex(clientId, readRequestType, leader)
+          .thenApply(index -> toReadIndexReplyProto(getId(), getMemberId(), true, index));
+    }
+
     if (leaderId == null) {
       return JavaUtils.completeExceptionally(new ReadIndexException(getMemberId() + ": Leader is unknown."));
     }
@@ -1639,6 +1673,7 @@ class RaftServerImpl implements RaftServer.Division,
     assertLifeCycleState(LifeCycle.States.RUNNING);
 
     final RaftPeerId peerId = RaftPeerId.valueOf(request.getServerRequest().getRequestorId());
+    CodeInjectionForTesting.execute(READ_INDEX, getId(), peerId, request);
 
     final LeaderStateImpl leader = role.getLeaderState().orElse(null);
     if (leader == null) {
