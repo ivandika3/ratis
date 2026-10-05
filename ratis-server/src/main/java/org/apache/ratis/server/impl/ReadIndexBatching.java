@@ -26,6 +26,7 @@ import org.apache.ratis.util.JavaUtils;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
@@ -39,18 +40,18 @@ import java.util.function.BiFunction;
 /**
  * Opportunistically batch follower-to-leader ReadIndex requests.
  *
- * <p>The batch is drained on the server executor without waiting for a timer. {@code batchSize}
- * is only a maximum drain cap, not a target size. Up to {@code maxInFlight} batches can be
- * admitted, each retaining its slot until reply fanout finishes.
+ * <p>Each drain captures all queued reads without waiting for a timer. Reply fanout completes
+ * at most {@code completionBatchSize} members per executor task. Up to {@code maxInFlight}
+ * batches can be admitted, each retaining its slot until reply fanout finishes.
  */
 class ReadIndexBatching {
   private final Executor executor;
-  private final int batchSize;
+  private final int completionBatchSize;
   private final int maxInFlight;
   private final BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl;
 
   /** Guarded by {@code this}. */
-  private final Queue<Pending> pending = new ArrayDeque<>();
+  private Queue<Pending> pending = new ArrayDeque<>();
   /** Guarded by {@code this}; includes batches whose replies are waiting for or running fanout. */
   private final Set<Batch> inFlight = new HashSet<>();
   /** Guarded by {@code this}; held from scheduling a drain until that drain finishes sending. */
@@ -58,10 +59,10 @@ class ReadIndexBatching {
   /** Guarded by {@code this}. */
   private boolean closed;
 
-  ReadIndexBatching(Executor executor, int batchSize, int maxInFlight,
+  ReadIndexBatching(Executor executor, int completionBatchSize, int maxInFlight,
       BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl) {
     this.executor = executor;
-    this.batchSize = batchSize;
+    this.completionBatchSize = completionBatchSize;
     this.maxInFlight = maxInFlight;
     this.readIndexAsyncImpl = readIndexAsyncImpl;
   }
@@ -84,7 +85,7 @@ class ReadIndexBatching {
   }
 
   private void close(Throwable throwable) {
-    final List<Pending> queued;
+    final Queue<Pending> queued;
     final List<Batch> running;
     synchronized (this) {
       if (closed) {
@@ -92,8 +93,8 @@ class ReadIndexBatching {
       }
       closed = true;
       drainScheduled = false;
-      queued = new ArrayList<>(pending);
-      pending.clear();
+      queued = pending;
+      pending = new ArrayDeque<>();
       running = new ArrayList<>(inFlight);
       running.forEach(Batch::cancel);
       inFlight.clear();
@@ -127,7 +128,8 @@ class ReadIndexBatching {
         drainScheduled = false;
         return;
       }
-      batch = pollBatch();
+      batch = new Batch(pending);
+      pending = new ArrayDeque<>();
       inFlight.add(batch);
     }
 
@@ -141,18 +143,6 @@ class ReadIndexBatching {
     }
   }
 
-  private Batch pollBatch() {
-    final List<Pending> batch = new ArrayList<>(Math.min(batchSize, pending.size()));
-    for (int i = 0; i < batchSize; i++) {
-      final Pending next = pending.poll();
-      if (next == null) {
-        break;
-      }
-      batch.add(next);
-    }
-    return new Batch(batch);
-  }
-
   private void scheduleCompletion(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
     try {
       executor.execute(() -> complete(batch, reply, throwable));
@@ -162,18 +152,15 @@ class ReadIndexBatching {
   }
 
   private void complete(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
-    try {
-      if (throwable != null) {
-        batch.completeExceptionally(JavaUtils.unwrapCompletionException(throwable));
-      } else {
-        batch.complete(reply);
-      }
-    } finally {
-      synchronized (this) {
-        inFlight.remove(batch);
-      }
-      scheduleDrain();
+    final Throwable failure = throwable == null ? null : JavaUtils.unwrapCompletionException(throwable);
+    if (!batch.complete(reply, failure, completionBatchSize)) {
+      scheduleCompletion(batch, reply, failure);
+      return;
     }
+    synchronized (this) {
+      inFlight.remove(batch);
+    }
+    scheduleDrain();
   }
 
   private static class Pending {
@@ -194,10 +181,14 @@ class ReadIndexBatching {
     }
 
     private final AtomicReference<State> state = new AtomicReference<>(State.PENDING);
-    private final List<Pending> pending;
+    /** Membership is immutable after detaching the submitting queue. */
+    private final Queue<Pending> pending;
+    /** Accessed only by successive completion tasks for this batch. */
+    private final Iterator<Pending> iterator;
 
-    Batch(List<Pending> pending) {
+    Batch(Queue<Pending> pending) {
       this.pending = pending;
+      this.iterator = pending.iterator();
     }
 
     void send(BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl,
@@ -215,7 +206,7 @@ class ReadIndexBatching {
         // Plain reads only need one ReadIndex RPC for the batch.  Read-after-write requests
         // bypass batching before reaching this class, since their ReadIndex depends on
         // client-specific write-index state.
-        final Pending first = pending.get(0);
+        final Pending first = pending.peek();
         replyFuture = readIndexAsyncImpl.apply(first.clientId, first.readRequestType);
       } catch (Throwable t) {
         completion.accept(null, t);
@@ -225,10 +216,20 @@ class ReadIndexBatching {
       replyFuture.whenComplete(completion);
     }
 
-    private void complete(ReadIndexReplyProto reply) {
-      if (state.compareAndSet(State.SENDING, State.COMPLETED)) {
-        pending.forEach(p -> p.future.complete(reply));
+    private boolean complete(ReadIndexReplyProto reply, Throwable throwable, int completionBatchSize) {
+      for (int i = 0; i < completionBatchSize && state.get() != State.COMPLETED && iterator.hasNext(); i++) {
+        final Pending next = iterator.next();
+        if (throwable == null) {
+          next.future.complete(reply);
+        } else {
+          next.future.completeExceptionally(throwable);
+        }
       }
+      if (state.get() != State.COMPLETED && iterator.hasNext()) {
+        return false;
+      }
+      state.compareAndSet(State.SENDING, State.COMPLETED);
+      return true;
     }
 
     private void cancel() {

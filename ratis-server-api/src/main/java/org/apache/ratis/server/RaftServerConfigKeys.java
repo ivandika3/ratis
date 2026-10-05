@@ -324,13 +324,14 @@ public interface RaftServerConfigKeys {
           setBoolean(properties::setBoolean, ENABLED_KEY, enabled);
         }
 
-        String BATCH_SIZE_KEY = PREFIX + ".size";
-        int BATCH_SIZE_DEFAULT = 64;
-        static int batchSize(RaftProperties properties) {
-          return getInt(properties::getInt, BATCH_SIZE_KEY, BATCH_SIZE_DEFAULT, getDefaultLog(), requireMin(1));
+        String COMPLETION_BATCH_SIZE_KEY = PREFIX + ".completion.size";
+        int COMPLETION_BATCH_SIZE_DEFAULT = 64;
+        static int completionBatchSize(RaftProperties properties) {
+          return getInt(properties::getInt, COMPLETION_BATCH_SIZE_KEY, COMPLETION_BATCH_SIZE_DEFAULT,
+              getDefaultLog(), requireMin(1));
         }
-        static void setBatchSize(RaftProperties properties, int batchSize) {
-          setInt(properties::setInt, BATCH_SIZE_KEY, batchSize, requireMin(1));
+        static void setCompletionBatchSize(RaftProperties properties, int completionBatchSize) {
+          setInt(properties::setInt, COMPLETION_BATCH_SIZE_KEY, completionBatchSize, requireMin(1));
         }
 
         String MAX_IN_FLIGHT_KEY = PREFIX + ".max-in-flight";
