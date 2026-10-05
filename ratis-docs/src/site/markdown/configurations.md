@@ -259,9 +259,9 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | boolean                                                                           |
 | **Default**     | false                                                                             |
 
-| **Property**    | `raft.server.read.read-index.batch.size` |
+| **Property**    | `raft.server.read.read-index.batch.completion.size` |
 |:----------------|:----------------------------------------------------|
-| **Description** | maximum number of reads in one opportunistic ReadIndex batch |
+| **Description** | maximum number of request futures completed per executor task |
 | **Type**        | int                                                 |
 | **Default**     | 64                                                  |
 
@@ -272,11 +272,15 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Default**     | 1                                                |
 
 When ReadIndex batching is enabled, a follower batches plain linearizable read
-requests opportunistically and sends a single ReadIndex request for the reads
-already queued when the batch is drained. `batch.size` is a maximum cap, not a
-target size; the follower does not wait to fill a batch. Read-after-write
-requests bypass batching so that the leader can evaluate each request's
-client-specific write index.
+requests opportunistically and sends a single ReadIndex request for all reads
+already queued when the batch is drained. The queue is detached before sending,
+so later arrivals belong to another batch. The follower does not wait to fill a
+batch. Read-after-write requests bypass batching so that the leader can evaluate
+each request's client-specific write index.
+
+Reply fanout completes at most `batch.completion.size` request futures per
+executor task, yielding between chunks. This is a local work limit, not a limit
+on the number of reads sharing a ReadIndex RPC.
 
 A batch retains its in-flight slot until its ReadIndex RPC and reply fanout
 finish. If capacity remains, another batch is dispatched without waiting for
