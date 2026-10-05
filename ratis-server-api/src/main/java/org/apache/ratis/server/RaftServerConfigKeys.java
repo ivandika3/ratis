@@ -335,6 +335,37 @@ public interface RaftServerConfigKeys {
       static void setGap(RaftProperties properties, long gap) {
         setLong(properties::setLong, GAP_KEY, gap, requireMin(0L));
       }
+
+      interface Batch {
+        String PREFIX = ReadIndex.PREFIX + ".batch";
+
+        String ENABLED_KEY = PREFIX + ".enabled";
+        boolean ENABLED_DEFAULT = false;
+        static boolean enabled(RaftProperties properties) {
+          return getBoolean(properties::getBoolean, ENABLED_KEY, ENABLED_DEFAULT, getDefaultLog());
+        }
+        static void setEnabled(RaftProperties properties, boolean enabled) {
+          setBoolean(properties::setBoolean, ENABLED_KEY, enabled);
+        }
+
+        String BATCH_SIZE_KEY = PREFIX + ".size";
+        int BATCH_SIZE_DEFAULT = 64;
+        static int batchSize(RaftProperties properties) {
+          return getInt(properties::getInt, BATCH_SIZE_KEY, BATCH_SIZE_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setBatchSize(RaftProperties properties, int batchSize) {
+          setInt(properties::setInt, BATCH_SIZE_KEY, batchSize, requireMin(1));
+        }
+
+        String MAX_IN_FLIGHT_KEY = PREFIX + ".max-in-flight";
+        int MAX_IN_FLIGHT_DEFAULT = 1;
+        static int maxInFlight(RaftProperties properties) {
+          return getInt(properties::getInt, MAX_IN_FLIGHT_KEY, MAX_IN_FLIGHT_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setMaxInFlight(RaftProperties properties, int maxInFlight) {
+          setInt(properties::setInt, MAX_IN_FLIGHT_KEY, maxInFlight, requireMin(1));
+        }
+      }
     }
   }
 
