@@ -335,7 +335,7 @@ public interface RaftServerConfigKeys {
           setInt(properties::setInt, THREAD_POOL_SIZE_KEY, size, requireMin(1));
         }
 
-        String COMPLETION_BATCH_SIZE_KEY = PREFIX + ".completion.size";
+        String COMPLETION_BATCH_SIZE_KEY = PREFIX + ".completion.batch.size";
         int COMPLETION_BATCH_SIZE_DEFAULT = 64;
         static int completionBatchSize(RaftProperties properties) {
           return getInt(properties::getInt, COMPLETION_BATCH_SIZE_KEY, COMPLETION_BATCH_SIZE_DEFAULT,

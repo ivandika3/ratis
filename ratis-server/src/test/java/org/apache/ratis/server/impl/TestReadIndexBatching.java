@@ -65,7 +65,12 @@ class TestReadIndexBatching {
   @Test
   void testCompletionBatchSizeMustBePositive() {
     final RaftProperties properties = new RaftProperties();
+    Assertions.assertEquals("raft.server.read.read-index.batch.completion.batch.size",
+        RaftServerConfigKeys.Read.ReadIndex.Batch.COMPLETION_BATCH_SIZE_KEY);
     Assertions.assertEquals(64, RaftServerConfigKeys.Read.ReadIndex.Batch.completionBatchSize(properties));
+
+    properties.setInt("raft.server.read.read-index.batch.completion.batch.size", 16);
+    Assertions.assertEquals(16, RaftServerConfigKeys.Read.ReadIndex.Batch.completionBatchSize(properties));
 
     Assertions.assertThrows(IllegalArgumentException.class,
         () -> RaftServerConfigKeys.Read.ReadIndex.Batch.setCompletionBatchSize(properties, 0));
