@@ -259,7 +259,7 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | boolean                                                                           |
 | **Default**     | false                                                                             |
 
-| **Property**    | `raft.server.read.read-index.batch.completion.size` |
+| **Property**    | `raft.server.read.read-index.batch.completion.batch.size` |
 |:----------------|:----------------------------------------------------|
 | **Description** | maximum number of request futures completed per executor task |
 | **Type**        | int                                                 |
@@ -278,7 +278,7 @@ so later arrivals belong to another batch. The follower does not wait to fill a
 batch. Read-after-write requests bypass batching so that the leader can evaluate
 each request's client-specific write index.
 
-Reply fanout completes at most `batch.completion.size` request futures per
+Reply fanout completes at most `batch.completion.batch.size` request futures per
 executor task, yielding between chunks. This is a local work limit, not a limit
 on the number of reads sharing a ReadIndex RPC.
 
