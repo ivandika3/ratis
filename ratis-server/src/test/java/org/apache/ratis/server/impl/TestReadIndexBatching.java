@@ -44,6 +44,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 class TestReadIndexBatching {
   @Test
+  void testThreadPoolSizeConfiguration() {
+    final RaftProperties properties = new RaftProperties();
+    Assertions.assertEquals("raft.server.read.read-index.batch.threadpool.size",
+        RaftServerConfigKeys.Read.ReadIndex.Batch.THREAD_POOL_SIZE_KEY);
+    Assertions.assertEquals(2, RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties));
+    for (int size : new int[]{1, 2, 4}) {
+      RaftServerConfigKeys.Read.ReadIndex.Batch.setThreadPoolSize(properties, size);
+      Assertions.assertEquals(size, RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties));
+    }
+    for (int invalid : new int[]{0, -1}) {
+      Assertions.assertThrows(IllegalArgumentException.class,
+          () -> RaftServerConfigKeys.Read.ReadIndex.Batch.setThreadPoolSize(properties, invalid));
+      properties.setInt(RaftServerConfigKeys.Read.ReadIndex.Batch.THREAD_POOL_SIZE_KEY, invalid);
+      Assertions.assertThrows(IllegalArgumentException.class,
+          () -> RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties));
+    }
+  }
+
+  @Test
   void testCompletionBatchSizeMustBePositive() {
     final RaftProperties properties = new RaftProperties();
     Assertions.assertEquals(64, RaftServerConfigKeys.Read.ReadIndex.Batch.completionBatchSize(properties));
