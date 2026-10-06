@@ -324,6 +324,17 @@ public interface RaftServerConfigKeys {
           setBoolean(properties::setBoolean, ENABLED_KEY, enabled);
         }
 
+        /** Dedicated batching worker count, read when a division is created. */
+        String THREAD_POOL_SIZE_KEY = PREFIX + ".threadpool.size";
+        int THREAD_POOL_SIZE_DEFAULT = 2;
+        static int threadPoolSize(RaftProperties properties) {
+          return getInt(properties::getInt, THREAD_POOL_SIZE_KEY, THREAD_POOL_SIZE_DEFAULT,
+              getDefaultLog(), requireMin(1));
+        }
+        static void setThreadPoolSize(RaftProperties properties, int size) {
+          setInt(properties::setInt, THREAD_POOL_SIZE_KEY, size, requireMin(1));
+        }
+
         String COMPLETION_BATCH_SIZE_KEY = PREFIX + ".completion.size";
         int COMPLETION_BATCH_SIZE_DEFAULT = 64;
         static int completionBatchSize(RaftProperties properties) {

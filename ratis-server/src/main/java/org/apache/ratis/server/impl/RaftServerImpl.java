@@ -264,6 +264,7 @@ class RaftServerImpl implements RaftServer.Division,
 
   private final ExecutorService serverExecutor;
   private final ExecutorService clientExecutor;
+  private final ExecutorService readIndexExecutor;
   private final ThreadGroup threadGroup;
 
   private final CompletableFuture<RaftClientReply> dummySuccessReply;
@@ -310,9 +311,13 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerConfigKeys.ThreadPool.clientCached(properties),
         RaftServerConfigKeys.ThreadPool.clientSize(properties),
         id + "-client");
-    this.readIndexBatching = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
+    // Isolate batch drains and inline reply continuations from replication work.
+    this.readIndexExecutor = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
+        ConcurrentUtils.newThreadPoolWithMax(false,
+            RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties), getMemberId() + "-read-index") : null;
+    this.readIndexBatching = readIndexExecutor != null ?
         new ReadIndexBatching(
-            serverExecutor,
+            readIndexExecutor,
             RaftServerConfigKeys.Read.ReadIndex.Batch.completionBatchSize(properties),
             RaftServerConfigKeys.Read.ReadIndex.Batch.maxInFlight(properties),
             this::sendReadIndexAsyncImpl) : null;
@@ -580,6 +585,11 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerMetricsImpl.removeRaftServerMetrics(getMemberId());
       } catch (Exception e) {
         LOG.warn("{}: Failed to unregister metric", getMemberId(), e);
+      }
+      try {
+        Optional.ofNullable(readIndexExecutor).ifPresent(ConcurrentUtils::shutdownAndWait);
+      } catch (Exception e) {
+        LOG.warn("{}: Failed to shutdown readIndexExecutor", getMemberId(), e);
       }
       try {
         ConcurrentUtils.shutdownAndWait(clientExecutor);
