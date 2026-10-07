@@ -26,6 +26,7 @@ import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.exceptions.ReadIndexException;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.simulation.MiniRaftClusterWithSimulatedRpc;
+import org.apache.ratis.util.ResourceSemaphore;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -40,6 +41,25 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 class TestReadIndexExecutor extends BaseTest {
+  @ParameterizedTest
+  @ValueSource(ints = {1, 2, 4})
+  void testElementLimitIsReadAtCreation(int elementLimit) throws Exception {
+    final RaftProperties properties = new RaftProperties();
+    RaftServerConfigKeys.Read.ReadIndex.Batch.setEnabled(properties, true);
+    RaftServerConfigKeys.Read.ReadIndex.Batch.setElementLimit(properties, elementLimit);
+    try (MiniRaftClusterWithSimulatedRpc cluster = MiniRaftClusterWithSimulatedRpc.FACTORY.newCluster(1, properties)) {
+      cluster.initServers();
+      final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
+      server.getRole().setLeaderElectionPause(true);
+      cluster.start();
+      final ReadIndexBatching batching = (ReadIndexBatching) RaftTestUtil.getDeclaredField(server, "readIndexBatching");
+      final ResourceSemaphore resource = (ResourceSemaphore) RaftTestUtil.getDeclaredField(batching, "resource");
+      Assertions.assertEquals(elementLimit, resource.availablePermits());
+      RaftServerConfigKeys.Read.ReadIndex.Batch.setElementLimit(server.getRaftServer().getProperties(), elementLimit + 1);
+      Assertions.assertEquals(elementLimit, resource.availablePermits());
+    }
+  }
+
   @ParameterizedTest
   @ValueSource(ints = {1, 2, 4})
   void testBatchingDoesNotWaitForServerExecutor(int threadPoolSize) throws Exception {

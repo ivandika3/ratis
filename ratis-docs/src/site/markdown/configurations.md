@@ -259,6 +259,12 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | boolean                                                                           |
 | **Default**     | false                                                                             |
 
+| **Property**    | `raft.server.read.read-index.batch.element-limit` |
+|:----------------|:--------------------------------------------------|
+| **Description** | maximum admitted ReadIndex requests per division, including queued reads and retained batch members |
+| **Type**        | positive int                                      |
+| **Default**     | 4096                                              |
+
 | **Property**    | `raft.server.read.read-index.batch.threadpool.size` |
 |:----------------|:---------------------------------------------------|
 | **Description** | dedicated ReadIndex batching workers per division, configured when the division is created |
@@ -286,8 +292,22 @@ sharing the executor.
 A batch retains its in-flight slot until its ReadIndex RPC and reply fanout
 finish. If capacity remains, another batch is dispatched without waiting for
 earlier batches, and batches may complete out of order. When all slots are
-occupied, new reads remain queued. This limit does not bound the pending queue
-or change gRPC channel selection.
+occupied, admitted reads remain queued. This batch-count limit is independent of
+the request-count admission limit and does not change gRPC channel selection.
+
+The element limit is configured when the division is created. It counts queued
+requests and all members of active batches until their full reply fanout returns.
+Detaching the queue into a batch, completing an individual future, or cancelling
+a future does not return admission capacity early. Requests beyond the limit
+fail immediately with `ResourceUnavailableException`; admitted requests continue
+normally and the batcher remains open. No retry or blocking admission is performed
+inside the batcher.
+
+Admission capacity is returned on full fanout completion, including RPC failure,
+or released during shutdown cleanup. This is a request-count limit for the
+ReadIndex batching stage, not a QPS or byte limit. It does not cover read-after-write
+requests or other paths that bypass batching, subsequent applied-index waits, or
+state-machine queries. Queued-read expiration and cancellation cleanup are unchanged.
 
 | **Property**    | `raft.server.read.leader.heartbeat-check.enabled` |
 |:----------------|:--------------------------------------------------|
