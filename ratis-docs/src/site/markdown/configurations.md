@@ -259,11 +259,11 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | boolean                                                                           |
 | **Default**     | false                                                                             |
 
-| **Property**    | `raft.server.read.read-index.batch.completion.batch.size` |
-|:----------------|:----------------------------------------------------|
-| **Description** | maximum number of request futures completed per executor task |
-| **Type**        | int                                                 |
-| **Default**     | 64                                                  |
+| **Property**    | `raft.server.read.read-index.batch.threadpool.size` |
+|:----------------|:---------------------------------------------------|
+| **Description** | dedicated ReadIndex batching workers per division, configured when the division is created |
+| **Type**        | positive int                                       |
+| **Default**     | 2                                                  |
 
 | **Property**    | `raft.server.read.read-index.batch.max-in-flight` |
 |:----------------|:-------------------------------------------------|
@@ -278,9 +278,10 @@ so later arrivals belong to another batch. The follower does not wait to fill a
 batch. Read-after-write requests bypass batching so that the leader can evaluate
 each request's client-specific write index.
 
-Reply fanout completes at most `batch.completion.batch.size` request futures per
-executor task, yielding between chunks. This is a local work limit, not a limit
-on the number of reads sharing a ReadIndex RPC.
+Reply fanout completes all request futures in a batch in one task on the
+dedicated ReadIndex executor. The RPC remains asynchronous. Completing a future
+may run read continuations inline, so a large batch can delay other batches
+sharing the executor.
 
 A batch retains its in-flight slot until its ReadIndex RPC and reply fanout
 finish. If capacity remains, another batch is dispatched without waiting for

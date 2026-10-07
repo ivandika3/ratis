@@ -168,7 +168,7 @@ class TestReadIndexRouting {
       setField("role", role);
       setField("snapshotInstallationHandler", snapshot);
       setField("writeIndexCache", writeIndexCache);
-      setField("readIndexBatching", new ReadIndexBatching(tasks::add, 2, 1,
+      setField("readIndexBatching", new ReadIndexBatching(tasks::add, 1,
           (clientId, type) -> CompletableFuture.completedFuture(reply)));
     }
 

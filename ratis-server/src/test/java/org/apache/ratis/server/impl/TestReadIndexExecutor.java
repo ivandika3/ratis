@@ -103,7 +103,7 @@ class TestReadIndexExecutor extends BaseTest {
       cluster.start();
       if (enabled) {
         final String worker = executor.submit(() -> Thread.currentThread().getName()).get(5, TimeUnit.SECONDS);
-        Assertions.assertTrue(worker.startsWith(server.getMemberId() + "-read-index"));
+        Assertions.assertTrue(worker.startsWith(server.getId() + "-read-index"));
       }
       server.close();
       server.close();
