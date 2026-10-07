@@ -133,7 +133,7 @@ public class TestReadIndexAdmissionWithGrpc extends BaseTest {
 
           release.countDown();
           Assertions.assertEquals("1", accepted.get(WAIT_SECONDS, TimeUnit.SECONDS).getContent().toStringUtf8());
-          // A member future may complete just before its batch finishes fanout and releases admission capacity.
+          // A member future may complete just before the batch completion task releases admission capacity.
           JavaUtils.attempt(() -> {
             // An overload closes the raw RPC stream; each recovery attempt needs a fresh client.
             try (RaftClient recoveryClient = cluster.createClient(followerId)) {

@@ -39,12 +39,68 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
 /**
- * Opportunistically batch follower-to-leader ReadIndex requests.
+ * Opportunistically batch ReadIndex requests. Opportunistic batching is also referred to by
+ * "Natural batching" or "Smart batching" in other articles / literatures (see "References").
  *
- * <p>Each drain captures all queued reads without waiting for a timer. Reply fanout completes
- * all members of a batch in one executor task. Up to {@code maxInFlight}
- * batches can be admitted, each retaining its slot until reply fanout finishes.
- * Queued reads and retained batch members share an {@code elementLimit} admission budget.
+ * <p>In opportunistic batching, instead of waiting for a given batch interval or a specific batch size,
+ * the sender immediately sends requests as soon as there are any pending requests.
+ * This means that it can handle bursty workloads by batching the requests into a single batch which amortizes
+ * the per-request latency over time. In a less busy cluster, the latency should still be minimized since
+ * the sender does not wait for any batch interval or specific batch size. However, note that the purpose
+ * of opportunistic batching mechanisms is to improve the requests throughput, not minimizing latency
+ * for every request.
+ *
+ * <p>
+ * In the context of ReadIndex, we define a batch as a collection of pending read requests. For each batch,
+ * we schedule a "drain" task that will do the following:
+ * <ol>
+ *   <li>
+ *     Seal / close the existing batch. This means that no more requests can be added to this batch.
+ *   </li>
+ *   <li>
+ *     Send a single ReadIndex request for the batch.
+ *   </li>
+ *   <li>
+ *     After the ReadIndex request returns, we schedule for batch completion which delivers the
+ *     RPC response or failure to all of its ReadIndex futures in a separate task.
+ *   </li>
+ * </ol>
+ * <p>
+ * To mitigate head-of-line blocking where a slow network can cause a single ReadIndex to take longer, we
+ * allow multiple inflight batches (up to {@code maxInflight} batches). For example
+ * <ol>
+ *   <li>
+ *     Batch 1: RPC 1 still pending
+ *   </li>
+ *   <li>
+ *     Batch 2: RPC 2 succeeds with ReadIndex 120
+ *   </li>
+ * </ol>
+ * The Batch 2 pending ReadIndex requests can be replied by ReadIndex 120 without being blocked by the earlier
+ * Batch 1. It is possible to allow Batch 1 to return immediately with ReadIndex 120 without violating
+ * linearizability since Batch 1 is sent before Batch 2. However, the tradeoff is that Batch 1 can have
+ * a lower ReadIndex (and therefore less waiting) if the ReadIndex request returns quickly. Therefore,
+ * this proposed optimizations can be considered if head-of-line blocking is a significant overhead.
+ *
+ * <p>
+ * Queued reads and retained batch members share an {@code elementLimit} pending limit to prevent
+ * unbounded number of elements in pending batches.
+ * <p>
+ * References:
+ * <ul>
+ *   <li>
+ *     <a href="https://www.vldb.org/pvldb/vol18/p2831-giortamis.pdf">
+ *       The LAW theorem: Local Reads and Linearizable Asynchronous Replication</a>
+ *   </li>
+ *   <li>
+ *     <a href="https://mechanical-sympathy.blogspot.com/2011/10/smart-batching.html">
+ *       Smart Batching</a>
+ *   </li>
+ *   <li>
+ *     <a href="https://martinfowler.com/articles/mechanical-sympathy-principles.html">
+ *       Principles of Mechanical Sympathy</a>
+ *   </li>
+ * </ul>
  */
 class ReadIndexBatching {
   private final Executor executor;
@@ -54,7 +110,7 @@ class ReadIndexBatching {
 
   /** Guarded by {@code this}. */
   private Queue<Pending> pending = new ArrayDeque<>();
-  /** Guarded by {@code this}; includes batches whose replies are waiting for or running fanout. */
+  /** Guarded by {@code this}; includes batches waiting for RPC replies or batch completion. */
   private final Set<Batch> inFlight = new HashSet<>();
   /** Guarded by {@code this}; held from scheduling a drain until that drain finishes sending. */
   private boolean drainScheduled;
@@ -105,7 +161,7 @@ class ReadIndexBatching {
       running = new ArrayList<>(inFlight);
       running.forEach(Batch::cancel);
       inFlight.clear();
-      // Drop ownership before settling futures; late fanout tasks must not return permits again.
+      // Drop ownership before settling futures; late completion tasks must not return permits again.
       resource.release(resource.used());
       resource.close();
     }
@@ -166,7 +222,7 @@ class ReadIndexBatching {
     batch.complete(reply, failure);
     synchronized (this) {
       if (inFlight.remove(batch)) {
-        // Keep every member charged until the full fanout, including inline continuations, returns.
+        // Keep every member charged until batch completion, including inline continuations, finishes.
         resource.release(batch.pending.size());
       }
     }
@@ -214,6 +270,8 @@ class ReadIndexBatching {
         // bypass batching before reaching this class, since their ReadIndex depends on
         // client-specific write-index state.
         final Pending first = pending.peek();
+        // TODO: We need to check whether it's safe to represent the ReadIndex clientId with the
+        //  clientId of the first read request.
         replyFuture = readIndexAsyncImpl.apply(first.clientId, first.readRequestType);
       } catch (Throwable t) {
         completion.accept(null, t);
@@ -243,7 +301,7 @@ class ReadIndexBatching {
 
     private void completeExceptionally(Throwable throwable) {
       cancel();
-      // A successful fanout may be blocked in a continuation; still settle its remaining members.
+      // A batch completion task may be blocked in a continuation; still settle its remaining members.
       pending.forEach(p -> p.future.completeExceptionally(throwable));
     }
   }

@@ -273,7 +273,7 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 
 | **Property**    | `raft.server.read.read-index.batch.max-in-flight` |
 |:----------------|:-------------------------------------------------|
-| **Description** | maximum number of admitted ReadIndex batches per Raft division, including reply fanout |
+| **Description** | maximum number of admitted ReadIndex batches per Raft division, including batch completion |
 | **Type**        | positive int                                     |
 | **Default**     | 1                                                |
 
@@ -284,26 +284,26 @@ so later arrivals belong to another batch. The follower does not wait to fill a
 batch. Read-after-write requests bypass batching so that the leader can evaluate
 each request's client-specific write index.
 
-Reply fanout completes all request futures in a batch in one task on the
-dedicated ReadIndex executor. The RPC remains asynchronous. Completing a future
+Batch completion delivers the RPC response or failure to all ReadIndex futures
+in that batch in one task on the dedicated ReadIndex executor. The RPC remains asynchronous. Completing a future
 may run read continuations inline, so a large batch can delay other batches
 sharing the executor.
 
-A batch retains its in-flight slot until its ReadIndex RPC and reply fanout
-finish. If capacity remains, another batch is dispatched without waiting for
+A batch retains its in-flight slot until its ReadIndex RPC returns and batch
+completion finishes. If capacity remains, another batch is dispatched without waiting for
 earlier batches, and batches may complete out of order. When all slots are
 occupied, admitted reads remain queued. This batch-count limit is independent of
 the request-count admission limit and does not change gRPC channel selection.
 
 The element limit is configured when the division is created. It counts queued
-requests and all members of active batches until their full reply fanout returns.
+requests and all members of active batches until their batch completion finishes.
 Detaching the queue into a batch, completing an individual future, or cancelling
 a future does not return admission capacity early. Requests beyond the limit
 fail immediately with `ResourceUnavailableException`; admitted requests continue
 normally and the batcher remains open. No retry or blocking admission is performed
 inside the batcher.
 
-Admission capacity is returned on full fanout completion, including RPC failure,
+Admission capacity is returned after batch completion, including RPC failure,
 or released during shutdown cleanup. This is a request-count limit for the
 ReadIndex batching stage, not a QPS or byte limit. It does not cover read-after-write
 requests or other paths that bypass batching, subsequent applied-index waits, or
