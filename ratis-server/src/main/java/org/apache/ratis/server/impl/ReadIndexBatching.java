@@ -20,6 +20,7 @@ package org.apache.ratis.server.impl;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadRequestTypeProto;
 import org.apache.ratis.protocol.ClientId;
+import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.exceptions.ReadIndexException;
 import org.apache.ratis.protocol.exceptions.ResourceUnavailableException;
 import org.apache.ratis.util.JavaUtils;
@@ -46,9 +47,7 @@ import java.util.function.BiFunction;
  * the sender immediately sends requests as soon as there are any pending requests.
  * This means that it can handle bursty workloads by batching the requests into a single batch which amortizes
  * the per-request latency over time. In a less busy cluster, the latency should still be minimized since
- * the sender does not wait for any batch interval or specific batch size. However, note that the purpose
- * of opportunistic batching mechanisms is to improve the requests throughput, not minimizing latency
- * for every request.
+ * the sender does not wait for any batch interval or specific batch size.
  *
  * <p>
  * In the context of ReadIndex, we define a batch as a collection of pending read requests. For each batch,
@@ -81,6 +80,21 @@ import java.util.function.BiFunction;
  * linearizability since Batch 1 is sent before Batch 2. However, the tradeoff is that Batch 1 can have
  * a lower ReadIndex (and therefore less waiting) if the ReadIndex request returns quickly. Therefore,
  * this proposed optimizations can be considered if head-of-line blocking is a significant overhead.
+ *
+ * <p>
+ * Note that there are a few possible caveats on enabling ReadIndex batching
+ * <ol>
+ *   <li>
+ *     The purpose of opportunistic batching is to improve the requests throughput by reducing
+ *     the average request latency, not minimizing individual request. Therefore, latency for a single
+ *     read request might increase.
+ *   </li>
+ *   <li>
+ *     Since the batch completion completes the futures all at once in a short amount of time,
+ *     this can cause a bursty {@link org.apache.ratis.statemachine.StateMachine#query(Message)}
+ *     which can cause higher contentions.
+ *   </li>
+ * </ol>
  *
  * <p>
  * Queued reads and retained batch members share an {@code elementLimit} pending limit to prevent
