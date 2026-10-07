@@ -236,7 +236,6 @@ class ReadIndexBatching {
     batch.complete(reply, failure);
     synchronized (this) {
       if (inFlight.remove(batch)) {
-        // Keep every member charged until batch completion, including inline continuations, finishes.
         resource.release(batch.pending.size());
       }
     }
@@ -280,12 +279,9 @@ class ReadIndexBatching {
 
       final CompletableFuture<ReadIndexReplyProto> replyFuture;
       try {
-        // Plain reads only need one ReadIndex RPC for the batch.  Read-after-write requests
-        // bypass batching before reaching this class, since their ReadIndex depends on
-        // client-specific write-index state.
+        // Plain ReadIndex calculation is client-independent, so use the first request's clientId.
+        // Read-after-write requests depend on client-specific write state and bypass batching.
         final Pending first = pending.peek();
-        // TODO: We need to check whether it's safe to represent the ReadIndex clientId with the
-        //  clientId of the first read request.
         replyFuture = readIndexAsyncImpl.apply(first.clientId, first.readRequestType);
       } catch (Throwable t) {
         completion.accept(null, t);
@@ -315,7 +311,6 @@ class ReadIndexBatching {
 
     private void completeExceptionally(Throwable throwable) {
       cancel();
-      // A batch completion task may be blocked in a continuation; still settle its remaining members.
       pending.forEach(p -> p.future.completeExceptionally(throwable));
     }
   }
