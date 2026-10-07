@@ -88,7 +88,7 @@ class TestReadIndexExecutor extends BaseTest {
         Assertions.assertTrue(started.await(5, TimeUnit.SECONDS));
         final CompletableFuture<ReadIndexReplyProto> read =
             batching.submit(ClientId.randomId(), RaftClientRequest.readRequestType().getRead());
-        // Elections are paused, so dispatch and error fanout must run independently without a known leader.
+        // Elections are paused, so dispatch and batch completion must run independently without a known leader.
         final ExecutionException failure = Assertions.assertThrows(ExecutionException.class,
             () -> read.get(5, TimeUnit.SECONDS));
         Assertions.assertInstanceOf(ReadIndexException.class, failure.getCause());

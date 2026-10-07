@@ -144,7 +144,7 @@ class TestReadIndexBatching {
   }
 
   @Test
-  void testAdmissionHeldThroughReentrantFanoutCallbacks() throws Exception {
+  void testAdmissionHeldThroughReentrantBatchCompletionCallbacks() throws Exception {
     final CapturingExecutor executor = new CapturingExecutor();
     final ReadIndexReplyProto reply = ReadIndexReplyProto.getDefaultInstance();
     final ReadIndexBatching batching = new ReadIndexBatching(executor, 2, 2,
@@ -264,7 +264,7 @@ class TestReadIndexBatching {
   }
 
   @Test
-  void testCloseDuringFanoutDoesNotReturnAdmissionTwice() throws Exception {
+  void testCloseDuringBatchCompletionDoesNotReturnAdmissionTwice() throws Exception {
     final CapturingExecutor executor = new CapturingExecutor();
     final ReadIndexReplyProto reply = ReadIndexReplyProto.getDefaultInstance();
     final ReadIndexBatching batching = new ReadIndexBatching(executor, 2, 1,
@@ -589,7 +589,7 @@ class TestReadIndexBatching {
   }
 
   @Test
-  void testNextDrainScheduleFailureAfterFanoutClosesPendingBatches() throws Exception {
+  void testNextDrainScheduleFailureAfterBatchCompletionClosesPendingBatches() throws Exception {
     final CapturingExecutor executor = new CapturingExecutor();
     final List<CompletableFuture<ReadIndexReplyProto>> rpcs = new ArrayList<>();
     final ReadIndexBatching batching = new ReadIndexBatching(executor, 4096, 2, (clientId, type) -> {
@@ -781,7 +781,7 @@ class TestReadIndexBatching {
   }
 
   @Test
-  void testRetainsSlotDuringReplyFanout() throws Exception {
+  void testRetainsSlotDuringBatchCompletion() throws Exception {
     final CapturingExecutor executor = new CapturingExecutor();
     final List<CompletableFuture<ReadIndexReplyProto>> rpcs = new ArrayList<>();
     final ReadIndexBatching batching = new ReadIndexBatching(executor, 4096, 2, (clientId, readRequestType) -> {
@@ -961,7 +961,7 @@ class TestReadIndexBatching {
   }
 
   @Test
-  void testCloseDuringReplyFanoutSettlesRemainingMembers() throws Exception {
+  void testCloseDuringBatchCompletionSettlesRemainingMembers() throws Exception {
     final CapturingExecutor executor = new CapturingExecutor();
     final CompletableFuture<ReadIndexReplyProto> rpc = new CompletableFuture<>();
     final ReadIndexBatching batching = new ReadIndexBatching(executor, 4096, 1, (clientId, readRequestType) -> rpc);
@@ -978,7 +978,7 @@ class TestReadIndexBatching {
     });
     final ReadIndexReplyProto reply = ReadIndexReplyProto.getDefaultInstance();
     rpc.complete(reply);
-    final CompletableFuture<Void> fanout = CompletableFuture.runAsync(executor::runNext);
+    final CompletableFuture<Void> completion = CompletableFuture.runAsync(executor::runNext);
     try {
       Assertions.assertTrue(completing.await(5, TimeUnit.SECONDS));
       batching.close();
@@ -987,7 +987,7 @@ class TestReadIndexBatching {
       assertReadIndexException(queued);
     } finally {
       resume.complete(null);
-      fanout.get(5, TimeUnit.SECONDS);
+      completion.get(5, TimeUnit.SECONDS);
       continuation.get(5, TimeUnit.SECONDS);
       batching.close();
     }
