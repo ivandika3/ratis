@@ -21,7 +21,9 @@ import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadRequestTypeProto;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.exceptions.ReadIndexException;
+import org.apache.ratis.protocol.exceptions.ResourceUnavailableException;
 import org.apache.ratis.util.JavaUtils;
+import org.apache.ratis.util.ResourceSemaphore;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -42,9 +44,11 @@ import java.util.function.BiFunction;
  * <p>Each drain captures all queued reads without waiting for a timer. Reply fanout completes
  * all members of a batch in one executor task. Up to {@code maxInFlight}
  * batches can be admitted, each retaining its slot until reply fanout finishes.
+ * Queued reads and retained batch members share an {@code elementLimit} admission budget.
  */
 class ReadIndexBatching {
   private final Executor executor;
+  private final ResourceSemaphore resource;
   private final int maxInFlight;
   private final BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl;
 
@@ -57,19 +61,25 @@ class ReadIndexBatching {
   /** Guarded by {@code this}. */
   private boolean closed;
 
-  ReadIndexBatching(Executor executor, int maxInFlight,
+  ReadIndexBatching(Executor executor, int elementLimit, int maxInFlight,
       BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl) {
     this.executor = executor;
+    this.resource = new ResourceSemaphore(elementLimit);
     this.maxInFlight = maxInFlight;
     this.readIndexAsyncImpl = readIndexAsyncImpl;
   }
 
   CompletableFuture<ReadIndexReplyProto> submit(ClientId clientId, ReadRequestTypeProto readRequestType) {
-    final CompletableFuture<ReadIndexReplyProto> future = new CompletableFuture<>();
+    final CompletableFuture<ReadIndexReplyProto> future;
     synchronized (this) {
       if (closed) {
         return JavaUtils.completeExceptionally(newClosedException());
       }
+      if (!resource.tryAcquire()) {
+        return JavaUtils.completeExceptionally(new ResourceUnavailableException(
+            "Failed to acquire a ReadIndex request: element limit reached (" + resource + ")."));
+      }
+      future = new CompletableFuture<>();
       pending.add(new Pending(clientId, readRequestType, future));
     }
 
@@ -95,6 +105,9 @@ class ReadIndexBatching {
       running = new ArrayList<>(inFlight);
       running.forEach(Batch::cancel);
       inFlight.clear();
+      // Drop ownership before settling futures; late fanout tasks must not return permits again.
+      resource.release(resource.used());
+      resource.close();
     }
     queued.forEach(p -> p.future.completeExceptionally(throwable));
     running.forEach(batch -> batch.completeExceptionally(throwable));
@@ -152,7 +165,10 @@ class ReadIndexBatching {
     final Throwable failure = throwable == null ? null : JavaUtils.unwrapCompletionException(throwable);
     batch.complete(reply, failure);
     synchronized (this) {
-      inFlight.remove(batch);
+      if (inFlight.remove(batch)) {
+        // Keep every member charged until the full fanout, including inline continuations, returns.
+        resource.release(batch.pending.size());
+      }
     }
     scheduleDrain();
   }

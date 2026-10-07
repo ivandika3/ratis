@@ -318,6 +318,7 @@ class RaftServerImpl implements RaftServer.Division,
     this.readIndexBatching = readIndexExecutor != null ?
         new ReadIndexBatching(
             readIndexExecutor,
+            RaftServerConfigKeys.Read.ReadIndex.Batch.elementLimit(properties),
             RaftServerConfigKeys.Read.ReadIndex.Batch.maxInFlight(properties),
             this::sendReadIndexAsyncImpl) : null;
     this.threadGroup = new ThreadGroup(proxy.getThreadGroup(), getMemberId().toString());

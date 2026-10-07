@@ -22,19 +22,26 @@ import org.apache.ratis.proto.RaftProtos.RaftPeerRole;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadIndexRequestProto;
 import org.apache.ratis.proto.RaftProtos.ReadRequestTypeProto;
+import org.apache.ratis.proto.RaftProtos.RaftRpcReplyProto;
 import org.apache.ratis.protocol.ClientId;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.ResourceUnavailableException;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServerRpc;
+import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.protocol.RaftServerAsynchronousProtocol;
+import org.apache.ratis.statemachine.StateMachine;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Field;
@@ -44,16 +51,137 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class TestReadIndexRouting {
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void testAdmissionDoesNotCoverDownstreamReadStages(boolean waitingForAppliedIndex) throws Exception {
+    final Routing routing = new Routing(RaftClientRequest.readRequestType().getRead(), 1);
+    when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
+    final Message query = Message.valueOf("query");
+    final Message answer = Message.valueOf("answer");
+    final ReadRequests readRequests = new ReadRequests(waitingForAppliedIndex ? 9 : 10, new RaftProperties());
+    final ServerState state = mock(ServerState.class);
+    when(state.getReadRequests()).thenReturn(readRequests);
+    when(routing.server.getState()).thenReturn(state);
+    final StateMachine stateMachine = mock(StateMachine.class);
+    final CompletableFuture<Message> queryFuture = new CompletableFuture<>();
+    when(stateMachine.query(query)).thenReturn(queryFuture);
+    when(routing.server.getStateMachine()).thenReturn(stateMachine);
+    routing.setField("readOption", RaftServerConfigKeys.Read.Option.LINEARIZABLE);
+    doCallRealMethod().when(routing.server).readOnlyAsync(any(), any(), any());
+
+    final CompletableFuture<Message> first =
+        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertFalse(first.isDone());
+    final CompletableFuture<Message> second =
+        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+    Assertions.assertFalse(second.isCompletedExceptionally(), "The earlier read must not retain ReadIndex capacity.");
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertFalse(first.isDone());
+    Assertions.assertFalse(second.isDone());
+    if (waitingForAppliedIndex) {
+      verify(stateMachine, times(0)).query(any());
+      readRequests.getAppliedIndexConsumer().accept(10);
+    }
+    queryFuture.complete(answer);
+    Assertions.assertSame(answer, first.get(5, TimeUnit.SECONDS));
+    Assertions.assertSame(answer, second.get(5, TimeUnit.SECONDS));
+    verify(stateMachine, times(2)).query(query);
+  }
+
+  @Test
+  void testOverloadPropagatesThroughLocalAndRpcReads() throws Exception {
+    final Routing routing = new Routing(RaftClientRequest.readRequestType().getRead(), 1);
+    when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
+    final Message query = Message.valueOf("query");
+    final Message answer = Message.valueOf("answer");
+    final ServerState state = mock(ServerState.class);
+    when(state.getReadRequests()).thenReturn(new ReadRequests(10, new RaftProperties()));
+    when(routing.server.getState()).thenReturn(state);
+    final StateMachine stateMachine = mock(StateMachine.class);
+    when(stateMachine.query(query)).thenReturn(CompletableFuture.completedFuture(answer));
+    when(routing.server.getStateMachine()).thenReturn(stateMachine);
+    routing.setField("readOption", RaftServerConfigKeys.Read.Option.LINEARIZABLE);
+    doCallRealMethod().when(routing.server).readOnlyAsync(any(), any(), any());
+
+    final CompletableFuture<Message> first =
+        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+    final CompletableFuture<Message> localRejected =
+        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+    Assertions.assertTrue(localRejected.isCompletedExceptionally());
+    final ExecutionException localFailure = Assertions.assertThrows(ExecutionException.class,
+        () -> localRejected.get(5, TimeUnit.SECONDS));
+    Assertions.assertInstanceOf(ResourceUnavailableException.class, localFailure.getCause());
+
+    final RaftClientRequest request = RaftClientRequest.newBuilder().setClientId(routing.clientId)
+        .setServerId(routing.id).setGroupId(routing.server.getMemberId().getGroupId()).setCallId(1)
+        .setType(RaftClientRequest.readRequestType()).setMessage(query).build();
+    final Method readAsync = RaftServerImpl.class.getDeclaredMethod("readAsync", RaftClientRequest.class);
+    readAsync.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    final CompletableFuture<RaftClientReply> rpcRejected =
+        (CompletableFuture<RaftClientReply>) readAsync.invoke(routing.server, request);
+    Assertions.assertTrue(rpcRejected.isCompletedExceptionally());
+    final ExecutionException rpcFailure = Assertions.assertThrows(ExecutionException.class,
+        () -> rpcRejected.get(5, TimeUnit.SECONDS));
+    Assertions.assertInstanceOf(ResourceUnavailableException.class, rpcFailure.getCause());
+    Assertions.assertFalse(first.isDone());
+    verify(routing.rpc, times(0)).readIndexAsync(any());
+
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertSame(answer, first.get(5, TimeUnit.SECONDS));
+    final CompletableFuture<Message> next =
+        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+    Assertions.assertFalse(next.isDone());
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertSame(answer, next.get(5, TimeUnit.SECONDS));
+  }
+
+  @Test
+  void testReadAfterWriteStillBypassesExhaustedAdmission() throws Exception {
+    final Routing routing = new Routing(RaftClientRequest.readRequestType().getRead(), 1);
+    when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
+    final CompletableFuture<ReadIndexReplyProto> first = routing.send("sendReadIndexAsync");
+    final CompletableFuture<ReadIndexReplyProto> rejected = routing.send("sendReadIndexAsync");
+    final ExecutionException failure = Assertions.assertThrows(ExecutionException.class,
+        () -> rejected.get(5, TimeUnit.SECONDS));
+    Assertions.assertInstanceOf(ResourceUnavailableException.class, failure.getCause());
+
+    final Method send = RaftServerImpl.class.getDeclaredMethod(
+        "sendReadIndexAsync", ClientId.class, ReadRequestTypeProto.class);
+    send.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    final CompletableFuture<ReadIndexReplyProto> bypass = (CompletableFuture<ReadIndexReplyProto>) send.invoke(
+        routing.server, routing.clientId, RaftClientRequest.readAfterWriteConsistentRequestType().getRead());
+    Assertions.assertEquals(10, bypass.get(5, TimeUnit.SECONDS).getReadIndex());
+    verify(routing.rpc).readIndexAsync(any());
+    Assertions.assertFalse(first.isDone());
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertEquals(10, first.get(5, TimeUnit.SECONDS).getReadIndex());
+  }
+
   @ParameterizedTest
   @EnumSource(value = RaftPeerRole.class, names = {"FOLLOWER", "CANDIDATE", "LISTENER"})
   void testOnlyFollowersAreBatched(RaftPeerRole currentRole) throws Exception {
@@ -149,6 +277,10 @@ class TestReadIndexRouting {
     }
 
     Routing(ReadRequestTypeProto readRequestType) throws Exception {
+      this(readRequestType, 4096);
+    }
+
+    Routing(ReadRequestTypeProto readRequestType, int elementLimit) throws Exception {
       this.readRequestType = readRequestType;
       final RaftGroupId groupId = RaftGroupId.randomId();
       when(server.getId()).thenReturn(id);
@@ -159,7 +291,8 @@ class TestReadIndexRouting {
       final RaftServerRpc serverRpc = mock(RaftServerRpc.class);
       when(server.getServerRpc()).thenReturn(serverRpc);
       when(serverRpc.async()).thenReturn(rpc);
-      final ReadIndexReplyProto reply = ReadIndexReplyProto.newBuilder().setReadIndex(10).build();
+      final ReadIndexReplyProto reply = ReadIndexReplyProto.newBuilder().setReadIndex(10)
+          .setServerReply(RaftRpcReplyProto.newBuilder().setSuccess(true)).build();
       when(rpc.readIndexAsync(any())).thenReturn(CompletableFuture.completedFuture(reply));
 
       final SnapshotInstallationHandler snapshot = mock(SnapshotInstallationHandler.class);
@@ -168,7 +301,7 @@ class TestReadIndexRouting {
       setField("role", role);
       setField("snapshotInstallationHandler", snapshot);
       setField("writeIndexCache", writeIndexCache);
-      setField("readIndexBatching", new ReadIndexBatching(tasks::add, 1,
+      setField("readIndexBatching", new ReadIndexBatching(tasks::add, elementLimit, 1,
           (clientId, type) -> CompletableFuture.completedFuture(reply)));
     }
 

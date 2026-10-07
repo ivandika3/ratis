@@ -324,6 +324,16 @@ public interface RaftServerConfigKeys {
           setBoolean(properties::setBoolean, ENABLED_KEY, enabled);
         }
 
+        /** Maximum queued reads and retained batch members per division, read when the division is created. */
+        String ELEMENT_LIMIT_KEY = PREFIX + ".element-limit";
+        int ELEMENT_LIMIT_DEFAULT = 4096;
+        static int elementLimit(RaftProperties properties) {
+          return getInt(properties::getInt, ELEMENT_LIMIT_KEY, ELEMENT_LIMIT_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setElementLimit(RaftProperties properties, int limit) {
+          setInt(properties::setInt, ELEMENT_LIMIT_KEY, limit, requireMin(1));
+        }
+
         /** Dedicated batching worker count, read when a division is created. */
         String THREAD_POOL_SIZE_KEY = PREFIX + ".threadpool.size";
         int THREAD_POOL_SIZE_DEFAULT = 2;
