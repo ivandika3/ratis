@@ -335,16 +335,6 @@ public interface RaftServerConfigKeys {
           setInt(properties::setInt, THREAD_POOL_SIZE_KEY, size, requireMin(1));
         }
 
-        String COMPLETION_BATCH_SIZE_KEY = PREFIX + ".completion.batch.size";
-        int COMPLETION_BATCH_SIZE_DEFAULT = 64;
-        static int completionBatchSize(RaftProperties properties) {
-          return getInt(properties::getInt, COMPLETION_BATCH_SIZE_KEY, COMPLETION_BATCH_SIZE_DEFAULT,
-              getDefaultLog(), requireMin(1));
-        }
-        static void setCompletionBatchSize(RaftProperties properties, int completionBatchSize) {
-          setInt(properties::setInt, COMPLETION_BATCH_SIZE_KEY, completionBatchSize, requireMin(1));
-        }
-
         String MAX_IN_FLIGHT_KEY = PREFIX + ".max-in-flight";
         int MAX_IN_FLIGHT_DEFAULT = 1;
         static int maxInFlight(RaftProperties properties) {

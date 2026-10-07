@@ -311,14 +311,13 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerConfigKeys.ThreadPool.clientCached(properties),
         RaftServerConfigKeys.ThreadPool.clientSize(properties),
         id + "-client");
-    // Isolate batch drains and inline reply continuations from replication work.
     this.readIndexExecutor = RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties) ?
         ConcurrentUtils.newThreadPoolWithMax(false,
-            RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties), getMemberId() + "-read-index") : null;
+            RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties),
+            id + "-read-index") : null;
     this.readIndexBatching = readIndexExecutor != null ?
         new ReadIndexBatching(
             readIndexExecutor,
-            RaftServerConfigKeys.Read.ReadIndex.Batch.completionBatchSize(properties),
             RaftServerConfigKeys.Read.ReadIndex.Batch.maxInFlight(properties),
             this::sendReadIndexAsyncImpl) : null;
     this.threadGroup = new ThreadGroup(proxy.getThreadGroup(), getMemberId().toString());

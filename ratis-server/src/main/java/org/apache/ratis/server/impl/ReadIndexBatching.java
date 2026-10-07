@@ -26,7 +26,6 @@ import org.apache.ratis.util.JavaUtils;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
@@ -41,12 +40,11 @@ import java.util.function.BiFunction;
  * Opportunistically batch follower-to-leader ReadIndex requests.
  *
  * <p>Each drain captures all queued reads without waiting for a timer. Reply fanout completes
- * at most {@code completionBatchSize} members per executor task. Up to {@code maxInFlight}
+ * all members of a batch in one executor task. Up to {@code maxInFlight}
  * batches can be admitted, each retaining its slot until reply fanout finishes.
  */
 class ReadIndexBatching {
   private final Executor executor;
-  private final int completionBatchSize;
   private final int maxInFlight;
   private final BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl;
 
@@ -59,10 +57,9 @@ class ReadIndexBatching {
   /** Guarded by {@code this}. */
   private boolean closed;
 
-  ReadIndexBatching(Executor executor, int completionBatchSize, int maxInFlight,
+  ReadIndexBatching(Executor executor, int maxInFlight,
       BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl) {
     this.executor = executor;
-    this.completionBatchSize = completionBatchSize;
     this.maxInFlight = maxInFlight;
     this.readIndexAsyncImpl = readIndexAsyncImpl;
   }
@@ -153,10 +150,7 @@ class ReadIndexBatching {
 
   private void complete(Batch batch, ReadIndexReplyProto reply, Throwable throwable) {
     final Throwable failure = throwable == null ? null : JavaUtils.unwrapCompletionException(throwable);
-    if (!batch.complete(reply, failure, completionBatchSize)) {
-      scheduleCompletion(batch, reply, failure);
-      return;
-    }
+    batch.complete(reply, failure);
     synchronized (this) {
       inFlight.remove(batch);
     }
@@ -183,12 +177,9 @@ class ReadIndexBatching {
     private final AtomicReference<State> state = new AtomicReference<>(State.PENDING);
     /** Membership is immutable after detaching the submitting queue. */
     private final Queue<Pending> pending;
-    /** Accessed only by successive completion tasks for this batch. */
-    private final Iterator<Pending> iterator;
 
     Batch(Queue<Pending> pending) {
       this.pending = pending;
-      this.iterator = pending.iterator();
     }
 
     void send(BiFunction<ClientId, ReadRequestTypeProto, CompletableFuture<ReadIndexReplyProto>> readIndexAsyncImpl,
@@ -216,20 +207,18 @@ class ReadIndexBatching {
       replyFuture.whenComplete(completion);
     }
 
-    private boolean complete(ReadIndexReplyProto reply, Throwable throwable, int completionBatchSize) {
-      for (int i = 0; i < completionBatchSize && state.get() != State.COMPLETED && iterator.hasNext(); i++) {
-        final Pending next = iterator.next();
+    private void complete(ReadIndexReplyProto reply, Throwable throwable) {
+      for (Pending next : pending) {
+        if (state.get() == State.COMPLETED) {
+          break;
+        }
         if (throwable == null) {
           next.future.complete(reply);
         } else {
           next.future.completeExceptionally(throwable);
         }
       }
-      if (state.get() != State.COMPLETED && iterator.hasNext()) {
-        return false;
-      }
       state.compareAndSet(State.SENDING, State.COMPLETED);
-      return true;
     }
 
     private void cancel() {
