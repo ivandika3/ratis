@@ -20,7 +20,6 @@ package org.apache.ratis.server.impl;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadRequestTypeProto;
 import org.apache.ratis.protocol.ClientId;
-import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.exceptions.ReadIndexException;
 import org.apache.ratis.protocol.exceptions.ResourceUnavailableException;
 import org.apache.ratis.util.JavaUtils;
@@ -40,67 +39,52 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 
 /**
- * Opportunistically batch ReadIndex requests. Opportunistic batching is also referred to by
- * "Natural batching" or "Smart batching" in other articles / literatures (see "References").
+ * Opportunistically batches ReadIndex requests, also known as natural batching or smart batching
+ * (see "References"). The caller batches only plain follower reads; read-after-write requests and
+ * leader-local reads bypass batching.
  *
- * <p>In opportunistic batching, instead of waiting for a given batch interval or a specific batch size,
- * the sender immediately sends requests as soon as there are any pending requests.
- * This means that it can handle bursty workloads by batching the requests into a single batch which amortizes
- * the per-request latency over time. In a less busy cluster, the latency should still be minimized since
- * the sender does not wait for any batch interval or specific batch size.
+ * <p>Pending reads schedule a drain when an in-flight batch slot is available. There is no deliberate
+ * batching interval or minimum batch size, but dispatch can still wait for executor availability or
+ * a batch slot. Batching amortizes RPC costs across the reads collected before a drain runs; it does
+ * not guarantee lower read latency.
  *
- * <p>
- * In the context of ReadIndex, we define a batch as a collection of pending read requests. For each batch,
- * we schedule a "drain" task that will do the following:
+ * <p>A batch is a collection of pending read requests with immutable membership. Formation and dispatch
+ * are serialized by one logical drain at a time:
  * <ol>
- *   <li>
- *     Seal / close the existing batch. This means that no more requests can be added to this batch.
- *   </li>
- *   <li>
- *     Send a single ReadIndex request for the batch.
- *   </li>
- *   <li>
- *     After the ReadIndex request returns, we schedule for batch completion which delivers the
- *     RPC response or failure to all of its ReadIndex futures in a separate task.
- *   </li>
- * </ol>
- * <p>
- * To mitigate head-of-line blocking where a slow network can cause a single ReadIndex to take longer, we
- * allow multiple inflight batches (up to {@code maxInflight} batches). For example
- * <ol>
- *   <li>
- *     Batch 1: RPC 1 still pending
- *   </li>
- *   <li>
- *     Batch 2: RPC 2 succeeds with ReadIndex 120
- *   </li>
- * </ol>
- * The Batch 2 pending ReadIndex requests can be replied by ReadIndex 120 without being blocked by the earlier
- * Batch 1. It is possible to allow Batch 1 to return immediately with ReadIndex 120 without violating
- * linearizability since Batch 1 is sent before Batch 2. However, the tradeoff is that Batch 1 can have
- * a lower ReadIndex (and therefore less waiting) if the ReadIndex request returns quickly. Therefore,
- * this proposed optimizations can be considered if head-of-line blocking is a significant overhead.
- *
- * <p>
- * Note that there are a few possible caveats on enabling ReadIndex batching
- * <ol>
- *   <li>
- *     The purpose of opportunistic batching is to improve the requests throughput by reducing
- *     the average request latency, not minimizing individual request. Therefore, latency for a single
- *     read request might increase.
- *   </li>
- *   <li>
- *     Since the batch completion completes the futures all at once in a short amount of time,
- *     this can cause a bursty {@link org.apache.ratis.statemachine.StateMachine#query(Message)}
- *     which can cause higher contentions.
- *   </li>
+ *   <li>Detach all currently pending reads into a batch. Later arrivals belong to a subsequent batch.</li>
+ *   <li>Send one asynchronous ReadIndex request for the batch.</li>
+ *   <li>When the request completes, schedule a separate task on the same dedicated executor to deliver
+ *     its response or failure sequentially to the batch's ReadIndex futures.</li>
  * </ol>
  *
- * <p>
- * Queued reads and retained batch members share an {@code elementLimit} pending limit to prevent
- * unbounded number of elements in pending batches.
- * <p>
- * References:
+ * <p>Up to {@code maxInFlight} batches may overlap. A batch retains its slot until its completion task
+ * finishes, including synchronous callbacks triggered by completing its futures. A later batch can
+ * complete independently of an earlier delayed RPC; its response is not reused to complete other batches.
+ * This concurrency does not isolate batches from delays in a shared transport.
+ *
+ * <p>Caveats:
+ * <ol>
+ *   <li>Size-one batches add bookkeeping and executor handoffs without reducing the number of RPCs.
+ *     Increasing {@code maxInFlight} can reduce batching efficiency and increase leader and network work.</li>
+ *   <li>All members share their batch's RPC delay or failure. With no free batch slots, subsequent reads
+ *     remain queued until a batch finishes completing.</li>
+ *   <li>Future completion is sequential, not atomic, and synchronous callbacks can occupy an executor
+ *     worker for a long time, delaying other drain or completion tasks.</li>
+ *   <li>Each read still waits for the local applied index before querying the state machine. Reads sharing
+ *     an index may cause bursts of
+ *     {@link org.apache.ratis.statemachine.StateMachine#query(org.apache.ratis.protocol.Message)} calls,
+ *     either during batch completion when the index is already applied or later on the thread advancing
+ *     the applied index.</li>
+ *   <li>No deadline is attached to a queued read at submission. Cancelling an individual future does not
+ *     remove its entry or release its admission capacity.</li>
+ * </ol>
+ *
+ * <p>Queued reads and retained batch members share an {@code elementLimit} admission limit. Excess incoming
+ * reads are rejected with {@link ResourceUnavailableException}. Capacity is released after full batch
+ * completion or when batching is closed. This bounds entries retained by the batching stage, not downstream
+ * applied-index waits, query concurrency, bytes, or read QPS, and does not provide per-client fairness.
+ *
+ * <p>References:
  * <ul>
  *   <li>
  *     <a href="https://www.vldb.org/pvldb/vol18/p2831-giortamis.pdf">
