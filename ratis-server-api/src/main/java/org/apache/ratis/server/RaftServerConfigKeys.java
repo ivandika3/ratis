@@ -311,6 +311,49 @@ public interface RaftServerConfigKeys {
       static void setRepliedIndexBatchInterval(RaftProperties properties, TimeDuration interval) {
         setTimeDuration(properties::setTimeDuration, REPLIED_INDEX_BATCH_INTERVAL_KEY, interval);
       }
+
+      interface Batch {
+        String PREFIX = ReadIndex.PREFIX + ".batch";
+
+        String ENABLED_KEY = PREFIX + ".enabled";
+        boolean ENABLED_DEFAULT = false;
+        static boolean enabled(RaftProperties properties) {
+          return getBoolean(properties::getBoolean, ENABLED_KEY, ENABLED_DEFAULT, getDefaultLog());
+        }
+        static void setEnabled(RaftProperties properties, boolean enabled) {
+          setBoolean(properties::setBoolean, ENABLED_KEY, enabled);
+        }
+
+        /** Maximum queued reads and retained batch members per division, read when the division is created. */
+        String ELEMENT_LIMIT_KEY = PREFIX + ".element-limit";
+        int ELEMENT_LIMIT_DEFAULT = 4096;
+        static int elementLimit(RaftProperties properties) {
+          return getInt(properties::getInt, ELEMENT_LIMIT_KEY, ELEMENT_LIMIT_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setElementLimit(RaftProperties properties, int limit) {
+          setInt(properties::setInt, ELEMENT_LIMIT_KEY, limit, requireMin(1));
+        }
+
+        /** Dedicated batching worker count, read when a division is created. */
+        String THREAD_POOL_SIZE_KEY = PREFIX + ".threadpool.size";
+        int THREAD_POOL_SIZE_DEFAULT = 2;
+        static int threadPoolSize(RaftProperties properties) {
+          return getInt(properties::getInt, THREAD_POOL_SIZE_KEY, THREAD_POOL_SIZE_DEFAULT,
+              getDefaultLog(), requireMin(1));
+        }
+        static void setThreadPoolSize(RaftProperties properties, int size) {
+          setInt(properties::setInt, THREAD_POOL_SIZE_KEY, size, requireMin(1));
+        }
+
+        String MAX_IN_FLIGHT_KEY = PREFIX + ".max-in-flight";
+        int MAX_IN_FLIGHT_DEFAULT = 1;
+        static int maxInFlight(RaftProperties properties) {
+          return getInt(properties::getInt, MAX_IN_FLIGHT_KEY, MAX_IN_FLIGHT_DEFAULT, getDefaultLog(), requireMin(1));
+        }
+        static void setMaxInFlight(RaftProperties properties, int maxInFlight) {
+          setInt(properties::setInt, MAX_IN_FLIGHT_KEY, maxInFlight, requireMin(1));
+        }
+      }
     }
   }
 
