@@ -26,9 +26,12 @@ import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.exceptions.ReadIndexException;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.simulation.MiniRaftClusterWithSimulatedRpc;
+import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.ResourceSemaphore;
+import org.apache.ratis.util.TimeDuration;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.concurrent.CompletableFuture;
@@ -42,6 +45,52 @@ import java.util.concurrent.TimeoutException;
 
 class TestReadIndexExecutor extends BaseTest {
   @ParameterizedTest
+  @CsvSource({"1, false", "2, false", "1, true", "2, true"})
+  void testCloseFromBatchCompletion(int threadPoolSize, boolean closeServer) throws Exception {
+    final RaftProperties properties = new RaftProperties();
+    RaftServerConfigKeys.Read.ReadIndex.Batch.setEnabled(properties, true);
+    RaftServerConfigKeys.Read.ReadIndex.Batch.setThreadPoolSize(properties, threadPoolSize);
+    RaftServerConfigKeys.setExecutorShutdownWait(properties, TimeDuration.valueOf(5, TimeUnit.SECONDS));
+    try (MiniRaftClusterWithSimulatedRpc cluster = MiniRaftClusterWithSimulatedRpc.FACTORY.newCluster(1, properties)) {
+      cluster.initServers();
+      final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
+      server.getRole().setLeaderElectionPause(true);
+      cluster.start();
+      final ReadIndexBatching batching =
+          (ReadIndexBatching) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexBatching");
+      final ExecutorService executor =
+          (ExecutorService) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexExecutor");
+      final CountDownLatch release = new CountDownLatch(1);
+      for (int i = 0; i < threadPoolSize; i++) {
+        executor.submit(() -> {
+          release.await();
+          return null;
+        });
+      }
+      final CompletableFuture<ReadIndexReplyProto> read =
+          batching.submit(ClientId.randomId(), RaftClientRequest.readRequestType().getRead());
+      final CompletableFuture<Void> closing = read.handle((reply, failure) -> {
+        if (closeServer) {
+          server.getRaftServer().close();
+        } else {
+          server.close();
+        }
+        return null;
+      });
+      release.countDown();
+      try {
+        closing.get(1, TimeUnit.SECONDS);
+      } finally {
+        Assertions.assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        RaftTestUtil.waitFor(() -> server.getInfo().getLifeCycleState() == LifeCycle.State.CLOSED, 10, 5000);
+        if (closeServer) {
+          RaftTestUtil.waitFor(() -> server.getRaftServer().getLifeCycleState() == LifeCycle.State.CLOSED, 10, 5000);
+        }
+      }
+    }
+  }
+
+  @ParameterizedTest
   @ValueSource(ints = {1, 2, 4})
   void testElementLimitIsReadAtCreation(int elementLimit) throws Exception {
     final RaftProperties properties = new RaftProperties();
@@ -52,7 +101,8 @@ class TestReadIndexExecutor extends BaseTest {
       final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
       server.getRole().setLeaderElectionPause(true);
       cluster.start();
-      final ReadIndexBatching batching = (ReadIndexBatching) RaftTestUtil.getDeclaredField(server, "readIndexBatching");
+      final ReadIndexBatching batching =
+          (ReadIndexBatching) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexBatching");
       final ResourceSemaphore resource = (ResourceSemaphore) RaftTestUtil.getDeclaredField(batching, "resource");
       Assertions.assertEquals(elementLimit, resource.availablePermits());
       RaftServerConfigKeys.Read.ReadIndex.Batch.setElementLimit(server.getRaftServer().getProperties(), elementLimit + 1);
@@ -73,7 +123,8 @@ class TestReadIndexExecutor extends BaseTest {
       final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
       server.getRole().setLeaderElectionPause(true);
       cluster.start();
-      final ReadIndexBatching batching = (ReadIndexBatching) RaftTestUtil.getDeclaredField(server, "readIndexBatching");
+      final ReadIndexBatching batching =
+          (ReadIndexBatching) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexBatching");
       final ExecutorService executor = (ExecutorService) RaftTestUtil.getDeclaredField(batching, "executor");
       Assertions.assertNotSame(server.getServerExecutor(), executor);
 
@@ -109,7 +160,8 @@ class TestReadIndexExecutor extends BaseTest {
     try (MiniRaftClusterWithSimulatedRpc cluster = MiniRaftClusterWithSimulatedRpc.FACTORY.newCluster(1, properties)) {
       cluster.initServers();
       final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
-      final ExecutorService executor = (ExecutorService) RaftTestUtil.getDeclaredField(server, "readIndexExecutor");
+      final ExecutorService executor =
+          (ExecutorService) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexExecutor");
       if (enabled) {
         Assertions.assertNotNull(executor);
         final ThreadPoolExecutor pool = (ThreadPoolExecutor) executor;
@@ -117,7 +169,7 @@ class TestReadIndexExecutor extends BaseTest {
         Assertions.assertEquals(0, pool.getPoolSize(), "Workers should be created lazily.");
       } else {
         Assertions.assertNull(executor);
-        Assertions.assertNull(RaftTestUtil.getDeclaredField(server, "readIndexBatching"));
+        Assertions.assertNull(RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexBatching"));
       }
       server.getRole().setLeaderElectionPause(true);
       cluster.start();
@@ -145,7 +197,8 @@ class TestReadIndexExecutor extends BaseTest {
       final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
       server.getRole().setLeaderElectionPause(true);
       cluster.start();
-      final ThreadPoolExecutor executor = (ThreadPoolExecutor) RaftTestUtil.getDeclaredField(server, "readIndexExecutor");
+      final ThreadPoolExecutor executor =
+          (ThreadPoolExecutor) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexExecutor");
       Assertions.assertEquals(threadPoolSize, executor.getCorePoolSize());
       Assertions.assertEquals(threadPoolSize, executor.getMaximumPoolSize());
       RaftServerConfigKeys.Read.ReadIndex.Batch.setThreadPoolSize(
@@ -156,8 +209,8 @@ class TestReadIndexExecutor extends BaseTest {
   }
 
   @ParameterizedTest
-  @ValueSource(ints = {1, 2, 4})
-  void testCloseSettlesQueuedReadsBeforeExecutorTermination(int threadPoolSize) throws Exception {
+  @CsvSource({"1, false", "2, false", "4, false", "1, true", "2, true", "4, true"})
+  void testCloseSettlesQueuedReadsBeforeExecutorTermination(int threadPoolSize, boolean failed) throws Exception {
     final RaftProperties properties = new RaftProperties();
     RaftServerConfigKeys.Read.ReadIndex.Batch.setEnabled(properties, true);
     RaftServerConfigKeys.Read.ReadIndex.Batch.setThreadPoolSize(properties, threadPoolSize);
@@ -166,8 +219,10 @@ class TestReadIndexExecutor extends BaseTest {
       final RaftServerImpl server = (RaftServerImpl) cluster.iterateDivisions().iterator().next();
       server.getRole().setLeaderElectionPause(true);
       cluster.start();
-      final ReadIndexBatching batching = (ReadIndexBatching) RaftTestUtil.getDeclaredField(server, "readIndexBatching");
-      final ExecutorService executor = (ExecutorService) RaftTestUtil.getDeclaredField(server, "readIndexExecutor");
+      final ReadIndexBatching batching =
+          (ReadIndexBatching) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexBatching");
+      final ExecutorService executor =
+          (ExecutorService) RaftTestUtil.getDeclaredField(server.getReadRequestHandler(), "readIndexExecutor");
       final CountDownLatch started = new CountDownLatch(threadPoolSize);
       final CountDownLatch release = new CountDownLatch(1);
       for (int i = 0; i < threadPoolSize; i++) {
@@ -182,22 +237,36 @@ class TestReadIndexExecutor extends BaseTest {
         Assertions.assertTrue(started.await(5, TimeUnit.SECONDS));
         final CompletableFuture<ReadIndexReplyProto> read =
             batching.submit(ClientId.randomId(), RaftClientRequest.readRequestType().getRead());
-        final CompletableFuture<Void> closeFuture = CompletableFuture.runAsync(server::close);
+        final CompletableFuture<Void> closeFuture = CompletableFuture.runAsync(() -> {
+          if (failed) {
+            synchronized (server) {
+              server.close(new IllegalStateException("test failure"), false);
+            }
+          } else {
+            server.close();
+          }
+        });
         closing = closeFuture;
         final ExecutionException failure = Assertions.assertThrows(ExecutionException.class,
             () -> read.get(5, TimeUnit.SECONDS));
         Assertions.assertInstanceOf(ReadIndexException.class, failure.getCause());
         Assertions.assertTrue(failure.getCause().getMessage().contains("closed"));
         RaftTestUtil.waitFor(executor::isShutdown, 10, 5000);
-        Assertions.assertThrows(TimeoutException.class, () -> closeFuture.get(100, TimeUnit.MILLISECONDS),
-            "Shutdown must wait for the dedicated workers.");
+        if (failed) {
+          closeFuture.get(5, TimeUnit.SECONDS);
+          Assertions.assertEquals(LifeCycle.State.CLOSING, server.getInfo().getLifeCycleState());
+        } else {
+          Assertions.assertThrows(TimeoutException.class, () -> closeFuture.get(100, TimeUnit.MILLISECONDS),
+              "Shutdown must wait for the dedicated workers.");
+        }
       } finally {
         release.countDown();
         if (closing != null) {
           closing.get(5, TimeUnit.SECONDS);
         }
       }
-      Assertions.assertTrue(executor.isTerminated());
+      Assertions.assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+      RaftTestUtil.waitFor(() -> server.getInfo().getLifeCycleState() == LifeCycle.State.CLOSED, 10, 5000);
     }
   }
 }

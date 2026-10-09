@@ -57,7 +57,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -71,24 +70,21 @@ class TestReadIndexRouting {
     final Message query = Message.valueOf("query");
     final Message answer = Message.valueOf("answer");
     final ReadRequests readRequests = new ReadRequests(waitingForAppliedIndex ? 9 : 10, new RaftProperties());
-    final ServerState state = mock(ServerState.class);
+    final ServerState state = routing.state;
     when(state.getReadRequests()).thenReturn(readRequests);
-    when(routing.server.getState()).thenReturn(state);
-    final StateMachine stateMachine = mock(StateMachine.class);
+    final StateMachine stateMachine = routing.stateMachine;
     final CompletableFuture<Message> queryFuture = new CompletableFuture<>();
     when(stateMachine.query(query)).thenReturn(queryFuture);
-    when(routing.server.getStateMachine()).thenReturn(stateMachine);
     routing.setField("readOption", RaftServerConfigKeys.Read.Option.LINEARIZABLE);
-    doCallRealMethod().when(routing.server).readOnlyAsync(any(), any(), any());
 
     final CompletableFuture<Message> first =
-        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+        routing.handler.readOnlyAsync(routing.clientId, routing.readRequestType, query);
     while (!routing.tasks.isEmpty()) {
       routing.tasks.remove().run();
     }
     Assertions.assertFalse(first.isDone());
     final CompletableFuture<Message> second =
-        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+        routing.handler.readOnlyAsync(routing.clientId, routing.readRequestType, query);
     Assertions.assertFalse(second.isCompletedExceptionally(), "The earlier read must not retain ReadIndex capacity.");
     while (!routing.tasks.isEmpty()) {
       routing.tasks.remove().run();
@@ -111,19 +107,16 @@ class TestReadIndexRouting {
     when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
     final Message query = Message.valueOf("query");
     final Message answer = Message.valueOf("answer");
-    final ServerState state = mock(ServerState.class);
+    final ServerState state = routing.state;
     when(state.getReadRequests()).thenReturn(new ReadRequests(10, new RaftProperties()));
-    when(routing.server.getState()).thenReturn(state);
-    final StateMachine stateMachine = mock(StateMachine.class);
+    final StateMachine stateMachine = routing.stateMachine;
     when(stateMachine.query(query)).thenReturn(CompletableFuture.completedFuture(answer));
-    when(routing.server.getStateMachine()).thenReturn(stateMachine);
     routing.setField("readOption", RaftServerConfigKeys.Read.Option.LINEARIZABLE);
-    doCallRealMethod().when(routing.server).readOnlyAsync(any(), any(), any());
 
     final CompletableFuture<Message> first =
-        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+        routing.handler.readOnlyAsync(routing.clientId, routing.readRequestType, query);
     final CompletableFuture<Message> localRejected =
-        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+        routing.handler.readOnlyAsync(routing.clientId, routing.readRequestType, query);
     Assertions.assertTrue(localRejected.isCompletedExceptionally());
     final ExecutionException localFailure = Assertions.assertThrows(ExecutionException.class,
         () -> localRejected.get(5, TimeUnit.SECONDS));
@@ -132,11 +125,7 @@ class TestReadIndexRouting {
     final RaftClientRequest request = RaftClientRequest.newBuilder().setClientId(routing.clientId)
         .setServerId(routing.id).setGroupId(routing.server.getMemberId().getGroupId()).setCallId(1)
         .setType(RaftClientRequest.readRequestType()).setMessage(query).build();
-    final Method readAsync = RaftServerImpl.class.getDeclaredMethod("readAsync", RaftClientRequest.class);
-    readAsync.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    final CompletableFuture<RaftClientReply> rpcRejected =
-        (CompletableFuture<RaftClientReply>) readAsync.invoke(routing.server, request);
+    final CompletableFuture<RaftClientReply> rpcRejected = routing.handler.readAsync(request);
     Assertions.assertTrue(rpcRejected.isCompletedExceptionally());
     final ExecutionException rpcFailure = Assertions.assertThrows(ExecutionException.class,
         () -> rpcRejected.get(5, TimeUnit.SECONDS));
@@ -149,7 +138,7 @@ class TestReadIndexRouting {
     }
     Assertions.assertSame(answer, first.get(5, TimeUnit.SECONDS));
     final CompletableFuture<Message> next =
-        routing.server.readOnlyAsync(routing.clientId, routing.readRequestType, query);
+        routing.handler.readOnlyAsync(routing.clientId, routing.readRequestType, query);
     Assertions.assertFalse(next.isDone());
     while (!routing.tasks.isEmpty()) {
       routing.tasks.remove().run();
@@ -167,12 +156,12 @@ class TestReadIndexRouting {
         () -> rejected.get(5, TimeUnit.SECONDS));
     Assertions.assertInstanceOf(ResourceUnavailableException.class, failure.getCause());
 
-    final Method send = RaftServerImpl.class.getDeclaredMethod(
+    final Method send = ReadRequestHandler.class.getDeclaredMethod(
         "sendReadIndexAsync", ClientId.class, ReadRequestTypeProto.class);
     send.setAccessible(true);
     @SuppressWarnings("unchecked")
     final CompletableFuture<ReadIndexReplyProto> bypass = (CompletableFuture<ReadIndexReplyProto>) send.invoke(
-        routing.server, routing.clientId, RaftClientRequest.readAfterWriteConsistentRequestType().getRead());
+        routing.handler, routing.clientId, RaftClientRequest.readAfterWriteConsistentRequestType().getRead());
     Assertions.assertEquals(10, bypass.get(5, TimeUnit.SECONDS).getReadIndex());
     verify(routing.rpc).readIndexAsync(any());
     Assertions.assertFalse(first.isDone());
@@ -198,9 +187,11 @@ class TestReadIndexRouting {
     Assertions.assertEquals(10, reply.get(5, TimeUnit.SECONDS).getReadIndex());
   }
 
-  @Test
-  void testReadAfterWriteBypassesBatching() throws Exception {
-    final ReadRequestTypeProto readRequestType = RaftClientRequest.readAfterWriteConsistentRequestType().getRead();
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void testReadAfterWriteBypassesBatching(boolean global) throws Exception {
+    final ReadRequestTypeProto readRequestType = RaftClientRequest.readAfterWriteConsistentRequestType().getRead()
+        .toBuilder().setGlobal(global).build();
     final Routing routing = new Routing(readRequestType);
     when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
 
@@ -211,6 +202,29 @@ class TestReadIndexRouting {
     Assertions.assertEquals(routing.clientId.toByteString(),
         request.getValue().getClientRequest().getRpcRequest().getRequestorId());
     Assertions.assertEquals(readRequestType, request.getValue().getClientRequest().getRead());
+  }
+
+  @Test
+  void testQueuedBatchUsesLocalLeaderAfterPromotion() throws Exception {
+    final Routing routing = new Routing();
+    when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.FOLLOWER);
+    final CompletableFuture<ReadIndexReplyProto> read = routing.send("sendReadIndexAsync");
+    Assertions.assertFalse(read.isDone());
+    verify(routing.rpc, times(0)).readIndexAsync(any());
+
+    final LeaderStateImpl leader = mock(LeaderStateImpl.class);
+    when(leader.getReadIndex(null)).thenReturn(CompletableFuture.completedFuture(20L));
+    synchronized (routing.server) {
+      when(routing.role.getCurrentRole()).thenReturn(RaftPeerRole.LEADER);
+      when(routing.role.getLeaderState()).thenReturn(Optional.of(leader));
+      when(routing.info.getLeaderId()).thenReturn(routing.id);
+    }
+    while (!routing.tasks.isEmpty()) {
+      routing.tasks.remove().run();
+    }
+    Assertions.assertEquals(20, read.get(5, TimeUnit.SECONDS).getReadIndex());
+    verify(leader).getReadIndex(null);
+    verify(routing.rpc, times(0)).readIndexAsync(any());
   }
 
   @Test
@@ -265,12 +279,15 @@ class TestReadIndexRouting {
     private final RaftPeerId id = RaftPeerId.valueOf("follower");
     private final RaftPeerId remoteId = RaftPeerId.valueOf("leader");
     private final RaftServerImpl server = mock(RaftServerImpl.class);
+    private final ServerState state = mock(ServerState.class);
+    private final StateMachine stateMachine = mock(StateMachine.class);
     private final RoleInfo role = mock(RoleInfo.class);
     private final DivisionInfo info = mock(DivisionInfo.class);
     private final RaftServerAsynchronousProtocol rpc = mock(RaftServerAsynchronousProtocol.class);
     private final Queue<Runnable> tasks = new ArrayDeque<>();
     private final ClientId clientId = ClientId.randomId();
     private final ReadRequestTypeProto readRequestType;
+    private final ReadRequestHandler handler;
 
     Routing() throws Exception {
       this(RaftClientRequest.readRequestType().getRead());
@@ -283,9 +300,11 @@ class TestReadIndexRouting {
     Routing(ReadRequestTypeProto readRequestType, int elementLimit) throws Exception {
       this.readRequestType = readRequestType;
       final RaftGroupId groupId = RaftGroupId.randomId();
+      final RaftGroupMemberId memberId = RaftGroupMemberId.valueOf(id, groupId);
       when(server.getId()).thenReturn(id);
-      when(server.getMemberId()).thenReturn(RaftGroupMemberId.valueOf(id, groupId));
+      when(server.getMemberId()).thenReturn(memberId);
       when(server.getInfo()).thenReturn(info);
+      when(server.getRole()).thenReturn(role);
       when(info.getLeaderId()).thenReturn(remoteId);
       when(role.getLeaderState()).thenReturn(Optional.empty());
       final RaftServerRpc serverRpc = mock(RaftServerRpc.class);
@@ -298,24 +317,37 @@ class TestReadIndexRouting {
       final SnapshotInstallationHandler snapshot = mock(SnapshotInstallationHandler.class);
       when(snapshot.getInProgressInstallSnapshotIndex()).thenReturn(RaftLog.INVALID_LOG_INDEX);
       final WriteIndexCache writeIndexCache = new WriteIndexCache(new RaftProperties());
-      setField("role", role);
-      setField("snapshotInstallationHandler", snapshot);
-      setField("writeIndexCache", writeIndexCache);
-      setField("readIndexBatching", new ReadIndexBatching(tasks::add, elementLimit, 1,
-          (clientId, type) -> CompletableFuture.completedFuture(reply)));
+      when(server.getSnapshotInstallationHandler()).thenReturn(snapshot);
+      when(server.getWriteIndexCache()).thenReturn(writeIndexCache);
+      when(server.getState()).thenReturn(state);
+      when(state.getMemberId()).thenReturn(memberId);
+      when(server.getStateMachine()).thenReturn(stateMachine);
+      handler = new ReadRequestHandler(server, new RaftProperties());
+      setField("readIndexBatching", new ReadIndexBatching(tasks::add, elementLimit, 1, (clientId, type) -> {
+        try {
+          return send("sendReadIndexAsyncImpl", clientId, type);
+        } catch (ReflectiveOperationException e) {
+          throw new IllegalStateException(e);
+        }
+      }));
     }
 
     private void setField(String name, Object value) throws Exception {
-      final Field field = RaftServerImpl.class.getDeclaredField(name);
+      final Field field = ReadRequestHandler.class.getDeclaredField(name);
       field.setAccessible(true);
-      field.set(server, value);
+      field.set(handler, value);
+    }
+
+    CompletableFuture<ReadIndexReplyProto> send(String name) throws Exception {
+      return send(name, clientId, readRequestType);
     }
 
     @SuppressWarnings("unchecked")
-    CompletableFuture<ReadIndexReplyProto> send(String name) throws Exception {
-      final Method method = RaftServerImpl.class.getDeclaredMethod(name, ClientId.class, ReadRequestTypeProto.class);
+    private CompletableFuture<ReadIndexReplyProto> send(String name, ClientId clientId, ReadRequestTypeProto type)
+        throws ReflectiveOperationException {
+      final Method method = ReadRequestHandler.class.getDeclaredMethod(name, ClientId.class, ReadRequestTypeProto.class);
       method.setAccessible(true);
-      return (CompletableFuture<ReadIndexReplyProto>) method.invoke(server, clientId, readRequestType);
+      return (CompletableFuture<ReadIndexReplyProto>) method.invoke(handler, clientId, type);
     }
   }
 }

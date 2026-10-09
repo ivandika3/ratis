@@ -144,6 +144,7 @@ class RaftServerImpl implements RaftServer.Division,
   static final String APPEND_ENTRIES = CLASS_NAME + ".appendEntries";
   static final String INSTALL_SNAPSHOT = CLASS_NAME + ".installSnapshot";
   static final String APPEND_TRANSACTION = CLASS_NAME + ".appendTransaction";
+  static final String READ_INDEX = CLASS_NAME + ".readIndexAsync";
   static final String LOG_SYNC = APPEND_ENTRIES + ".logComplete";
   static final String APPEND_ENTRIES_BEFORE_APPEND_LOG = APPEND_ENTRIES + ".beforeAppendLog";
   static final String START_LEADER_ELECTION = CLASS_NAME + ".startLeaderElection";
@@ -533,10 +534,10 @@ class RaftServerImpl implements RaftServer.Division,
     if (newState != State.CLOSING) {
       return;
     }
-    if (cause == null) {
+    if (cause == null && !ReadRequestHandler.isReadIndexThread()) {
       closeImpl(null, allServers);
     } else {
-      // Close on failure: The caller may hold the server lock or run on an executor that closeImpl must stop
+      // The caller may hold the server lock or run on an executor that closeImpl must stop.
       Daemon.newBuilder()
           .setName(getMemberId() + "-close")
           .setThreadGroup(threadGroup)
@@ -553,6 +554,11 @@ class RaftServerImpl implements RaftServer.Division,
         LOG.error("{}: shutdown this division due to a failure.", getMemberId(), cause);
       } else {
         LOG.info("{}: shutdown this division normally.", getMemberId());
+      }
+      try {
+        readRequestHandler.closeReadIndexBatching();
+      } catch (Exception e) {
+        LOG.warn("{}: Failed to close ReadIndexBatching", getMemberId(), e);
       }
       try {
         jmxAdapter.unregister();
@@ -585,6 +591,11 @@ class RaftServerImpl implements RaftServer.Division,
         RaftServerMetricsImpl.removeRaftServerMetrics(getMemberId());
       } catch (Exception e) {
         LOG.warn("{}: Failed to unregister metric", getMemberId(), e);
+      }
+      try {
+        readRequestHandler.shutdownReadIndexExecutor(executorShutdownWait);
+      } catch (Exception e) {
+        LOG.warn("{}: Failed to shutdown readIndexExecutor", getMemberId(), e);
       }
       try {
         ConcurrentUtils.shutdownAndWait(executorShutdownWait, clientExecutor);

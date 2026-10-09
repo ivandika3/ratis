@@ -42,6 +42,7 @@ import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.ServerFactory;
 import org.apache.ratis.server.storage.RaftStorage.StartupOption;
 import org.apache.ratis.util.ConcurrentUtils;
+import org.apache.ratis.util.Daemon;
 import org.apache.ratis.util.JvmPauseMonitor;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.RaftServerRpc;
@@ -420,6 +421,16 @@ class RaftServerProxy implements RaftServer {
 
   @Override
   public void close() {
+    if (ReadRequestHandler.isReadIndexThread()) {
+      // Closing divisions waits for their ReadIndex workers, including the caller.
+      Daemon.newBuilder()
+          .setName(getId() + "-close")
+          .setThreadGroup(threadGroup)
+          .setRunnable(this::close)
+          .build()
+          .start();
+      return;
+    }
     lifeCycle.checkStateAndClose(() -> {
       LOG.info("{}: close", getId());
 
