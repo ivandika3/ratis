@@ -264,7 +264,6 @@ class ReadIndexBatching {
       final CompletableFuture<ReadIndexReplyProto> replyFuture;
       try {
         // Plain ReadIndex calculation is client-independent, so use the first request's clientId.
-        // Read-after-write requests depend on client-specific write state and bypass batching.
         final Pending first = pending.peek();
         replyFuture = readIndexAsyncImpl.apply(first.clientId, first.readRequestType);
       } catch (Throwable t) {

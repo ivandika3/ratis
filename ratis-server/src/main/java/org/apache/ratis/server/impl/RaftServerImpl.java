@@ -1157,6 +1157,11 @@ class RaftServerImpl implements RaftServer.Division,
     if (installSnapshot != RaftLog.INVALID_LOG_INDEX) {
       return JavaUtils.completeExceptionally(getReadException("get", installSnapshot, false));
     }
+    // Read-after-write requests are currently incompatible with ReadIndex batching
+    // since ReadIndex batching groups multiple ReadIndex for multiple read requests
+    // to a single ReadIndex request, which can only contain a single client ID. The
+    // read requests in the batch can contain different client IDs for the read-after-write
+    // tracking, which is lost by the batch ReadIndex request.
     if (readIndexBatching != null
         && role.getCurrentRole() == RaftPeerRole.FOLLOWER
         && !readRequestType.getReadAfterWriteConsistent()) {
