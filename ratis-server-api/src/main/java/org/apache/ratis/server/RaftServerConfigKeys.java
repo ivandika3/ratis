@@ -218,6 +218,30 @@ public interface RaftServerConfigKeys {
       setTimeDuration(properties::setTimeDuration, TIMEOUT_KEY, readOnlyTimeout);
     }
 
+    String CLOCK_UNCERTAINTY_KEY = PREFIX + ".clock.uncertainty";
+    TimeDuration CLOCK_UNCERTAINTY_DEFAULT = null;
+
+    /**
+     * Maximum absolute wall-clock error, including timestamp precision. Unset disables timestamp-based reads.
+     * Administrators must maintain this bound and configure it equally throughout the group. A reduced bound
+     * must remain valid for previously stamped entries. Ratis does not synchronize or monitor system clocks.
+     */
+    static TimeDuration clockUncertainty(RaftProperties properties) {
+      final TimeDuration value = properties.getTimeDuration(CLOCK_UNCERTAINTY_KEY,
+          CLOCK_UNCERTAINTY_DEFAULT, TimeUnit.MILLISECONDS);
+      if (value != null && value.isNegative()) {
+        throw new IllegalArgumentException("Negative clock uncertainty: " + value);
+      }
+      return value;
+    }
+
+    static void setClockUncertainty(RaftProperties properties, TimeDuration uncertainty) {
+      if (uncertainty.isNegative()) {
+        throw new IllegalArgumentException("Negative clock uncertainty: " + uncertainty);
+      }
+      setTimeDuration(properties::setTimeDuration, CLOCK_UNCERTAINTY_KEY, uncertainty);
+    }
+
     enum Option {
       /** Directly query statemachine. Efficient but may undermine linearizability */
       DEFAULT,

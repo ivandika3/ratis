@@ -156,6 +156,8 @@ public interface ClientProtoUtils {
         return RaftClientRequest.Type.valueOf(p.getRead());
       case STALEREAD:
         return RaftClientRequest.Type.valueOf(p.getStaleRead());
+      case BOUNDEDSTALEREAD:
+        return RaftClientRequest.Type.valueOf(p.getBoundedStaleRead());
       case WATCH:
         return RaftClientRequest.Type.valueOf(p.getWatch());
       default:
@@ -239,6 +241,9 @@ public interface ClientProtoUtils {
         break;
       case STALEREAD:
         b.setStaleRead(type.getStaleRead());
+        break;
+      case BOUNDEDSTALEREAD:
+        b.setBoundedStaleRead(type.getBoundedStaleRead());
         break;
       case WATCH:
         b.setWatch(type.getWatch());

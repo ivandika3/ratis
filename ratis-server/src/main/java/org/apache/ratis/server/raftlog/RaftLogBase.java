@@ -228,7 +228,8 @@ public abstract class RaftLogBase implements RaftLog {
     final long nextIndex;
     try(AutoCloseableLock writeLock = writeLock()) {
       nextIndex = getNextIndex();
-      entry = LogProtoUtils.toLogEntryProto(newCommitIndex, term, nextIndex);
+      entry = LogProtoUtils.toLogEntryProto(newCommitIndex, term, nextIndex).toBuilder()
+          .setAppendTimestampMs(System.currentTimeMillis()).build();
       appendEntry(entry);
     }
     lastMetadataEntry.set(entry);
@@ -254,7 +255,8 @@ public abstract class RaftLogBase implements RaftLog {
     checkLogState();
     try(AutoCloseableLock writeLock = writeLock()) {
       final long nextIndex = getNextIndex();
-      appendEntry(LogProtoUtils.toLogEntryProto(newConf, term, nextIndex));
+      appendEntry(LogProtoUtils.toLogEntryProto(newConf, term, nextIndex).toBuilder()
+          .setAppendTimestampMs(System.currentTimeMillis()).build());
       return nextIndex;
     }
   }

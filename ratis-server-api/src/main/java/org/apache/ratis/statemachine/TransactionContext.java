@@ -86,6 +86,9 @@ public interface TransactionContext {
 
   /**
    * Initialize {@link LogEntryProto} using the internal {@link StateMachineLogEntryProto}.
+   * Implementations supporting timestamp bounded reads should stamp the original append time in epoch
+   * milliseconds here and retain the same entry in getLogEntry(). An absent timestamp disables its use as
+   * freshness evidence; never refresh timestamps during replay or replication.
    * @param term The current term.
    * @param index The index of the log entry.
    * @return the result {@link LogEntryProto}
