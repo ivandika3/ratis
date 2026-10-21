@@ -25,8 +25,14 @@ import org.apache.ratis.protocol.GroupInfoReply;
 import org.apache.ratis.protocol.GroupListReply;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.exceptions.TimeoutIOException;
 import org.apache.ratis.rpc.SupportedRpcType;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.protocol.RaftServerAsynchronousProtocol;
+import org.apache.ratis.rpc.CallId;
+import org.apache.ratis.util.IOUtils;
+import org.apache.ratis.util.TimeoutExecutor;
 import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.thirdparty.io.netty.bootstrap.ServerBootstrap;
 import org.apache.ratis.thirdparty.io.netty.channel.*;
@@ -50,13 +56,15 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.Objects;
 
 /**
  * A netty server endpoint that acts as the communication layer.
  */
-public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy, NettyRpcProxy.PeerMap> {
+public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy, NettyRpcProxy.PeerMap>
+    implements RaftServerAsynchronousProtocol {
   public static final Logger LOG = LoggerFactory.getLogger(NettyRpcService.class);
   static final String CLASS_NAME = JavaUtils.getClassSimpleName(NettyRpcService.class);
   public static final String SEND_SERVER_REQUEST = CLASS_NAME + ".sendServerRequest";
@@ -91,8 +99,30 @@ public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy,
   class InboundHandler extends SimpleChannelInboundHandler<RaftNettyServerRequestProto> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, RaftNettyServerRequestProto proto) {
-      final RaftNettyServerReplyProto reply = handle(proto);
-      ctx.writeAndFlush(reply);
+      // Neither ReadIndex nor a bounded read may occupy an event loop while waiting for heartbeats/application.
+      if (proto.hasReadIndexRequest() || (proto.hasRaftClientRequest()
+          && proto.getRaftClientRequest().hasBoundedStaleRead())) {
+        final RaftRpcRequestProto request = proto.hasReadIndexRequest()
+            ? proto.getReadIndexRequest().getServerRequest() : proto.getRaftClientRequest().getRpcRequest();
+        try {
+          final CompletableFuture<RaftNettyServerReplyProto> reply;
+          if (proto.hasReadIndexRequest()) {
+            reply = server.readIndexAsync(proto.getReadIndexRequest()).thenApply(index ->
+                RaftNettyServerReplyProto.newBuilder().setReadIndexReply(index.toBuilder()
+                    .setServerReply(index.getServerReply().toBuilder().setCallId(request.getCallId()))).build());
+          } else {
+            reply = server.submitClientRequestAsync(ClientProtoUtils.toRaftClientRequest(proto.getRaftClientRequest()))
+                .thenApply(clientReply -> RaftNettyServerReplyProto.newBuilder()
+                    .setRaftClientReply(ClientProtoUtils.toRaftClientReplyProto(clientReply)).build());
+          }
+          reply.whenComplete((value, error) -> ctx.writeAndFlush(error == null ? value
+              : toRaftNettyServerReplyProto(request, IOUtils.asIOException(error))));
+        } catch (Exception e) {
+          ctx.writeAndFlush(toRaftNettyServerReplyProto(request, IOUtils.asIOException(e)));
+        }
+      } else {
+        ctx.writeAndFlush(handle(proto));
+      }
     }
   }
 
@@ -358,6 +388,50 @@ public final class NettyRpcService extends RaftServerRpcWithProxy<NettyRpcProxy,
         .build();
     final RaftRpcRequestProto serverRequest = request.getServerRequest();
     return sendRaftNettyServerRequestProto(serverRequest, proto).getInstallSnapshotReply();
+  }
+
+  @Override
+  public RaftServerAsynchronousProtocol async() {
+    return this;
+  }
+
+  @Override
+  public CompletableFuture<ReadIndexReplyProto> readIndexAsync(ReadIndexRequestProto request) throws IOException {
+    // ReadIndex historically used call ID zero; multiplexed Netty connections need a unique transport ID.
+    final ReadIndexRequestProto wire = request.toBuilder()
+        .setServerRequest(request.getServerRequest().toBuilder().setCallId(CallId.getAndIncrement())).build();
+    return sendRaftNettyServerRequestAsync(wire.getServerRequest(),
+        RaftNettyServerRequestProto.newBuilder().setReadIndexRequest(wire).build())
+        .thenApply(RaftNettyServerReplyProto::getReadIndexReply);
+  }
+
+  @Override
+  public CompletableFuture<AppendEntriesReplyProto> appendEntriesAsync(AppendEntriesRequestProto request)
+      throws IOException {
+    return sendRaftNettyServerRequestAsync(request.getServerRequest(),
+        RaftNettyServerRequestProto.newBuilder().setAppendEntriesRequest(request).build())
+        .thenApply(RaftNettyServerReplyProto::getAppendEntriesReply);
+  }
+
+  private CompletableFuture<RaftNettyServerReplyProto> sendRaftNettyServerRequestAsync(
+      RaftRpcRequestProto request, RaftNettyServerRequestProto proto) throws IOException {
+    CodeInjectionForTesting.execute(SEND_SERVER_REQUEST, getId(), null, request);
+    final RaftPeerId peer = RaftPeerId.valueOf(request.getReplyId());
+    try {
+      final CompletableFuture<RaftNettyServerReplyProto> future = getProxies().getProxy(peer).sendAsync(proto);
+      TimeoutExecutor.getInstance().onTimeout(RaftServerConfigKeys.Read.timeout(server.getProperties()),
+          () -> future.completeExceptionally(new TimeoutIOException("Server RPC timed out: " + peer)),
+          LOG, () -> "Failed to time out server RPC");
+      // Resetting a proxy closes its channel and may wait; do not perform that work on a Netty event loop.
+      return future.whenCompleteAsync((reply, error) -> {
+        if (error != null) {
+          getProxies().handleException(peer, error, false);
+        }
+      });
+    } catch (IOException | RuntimeException e) {
+      getProxies().handleException(peer, e, false);
+      throw e;
+    }
   }
 
   private RaftNettyServerReplyProto sendRaftNettyServerRequestProto(

@@ -88,6 +88,8 @@ public class NettyRpcProxy implements Closeable {
     switch (requestCase) {
       case REQUESTVOTEREQUEST:
         return proto.getRequestVoteRequest().getServerRequest();
+      case READINDEXREQUEST:
+        return proto.getReadIndexRequest().getServerRequest();
       case APPENDENTRIESREQUEST:
         return proto.getAppendEntriesRequest().getServerRequest();
       case INSTALLSNAPSHOTREQUEST:
@@ -124,6 +126,8 @@ public class NettyRpcProxy implements Closeable {
         return proto.getRequestVoteReply().getServerReply().getCallId();
       case STARTLEADERELECTIONREPLY:
         return proto.getStartLeaderElectionReply().getServerReply().getCallId();
+      case READINDEXREPLY:
+        return proto.getReadIndexReply().getServerReply().getCallId();
       case APPENDENTRIESREPLY:
         return proto.getAppendEntriesReply().getServerReply().getCallId();
       case INSTALLSNAPSHOTREPLY:
@@ -212,7 +216,7 @@ public class NettyRpcProxy implements Closeable {
         LOG.debug("Request {} not found for callId={} from {} (reason={}, outstanding={})",
             expected == null ? "future" : "reply", callId, peer, reason, replies.size());
       }
-      if (expected != null) {
+      if (expected != null && removed != null) {
         Preconditions.assertSame(expected, removed, "removed");
       }
       return removed;
@@ -223,6 +227,7 @@ public class NettyRpcProxy implements Closeable {
       final long callId = getRequest(request).getCallId();
       final CompletableFuture<RaftNettyServerReplyProto> previous = replies.put(callId, reply);
       Preconditions.assertNull(previous, "previous");
+      reply.whenComplete((value, error) -> replies.remove(callId, reply));
 
       final ChannelFuture future;
       try {

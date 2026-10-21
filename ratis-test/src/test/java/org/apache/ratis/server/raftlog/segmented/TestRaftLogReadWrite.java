@@ -95,6 +95,10 @@ public class TestRaftLogReadWrite extends BaseTest {
     for (int i = 0; i < entries.length; i++) {
       SimpleOperation m = new SimpleOperation("m" + i);
       entries[i] = LogProtoUtils.toLogEntryProto(m.getLogEntryContent(), 0, i);
+      if ((i & 1) == 0) {
+        // Mix timestamped and legacy records, including a valid epoch-zero timestamp.
+        entries[i] = entries[i].toBuilder().setAppendTimestampMs(i * 1000L).build();
+      }
       final int s = entries[i].getSerializedSize();
       size += CodedOutputStream.computeUInt32SizeNoTag(s) + s + 4;
       out.write(entries[i]);
