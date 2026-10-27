@@ -82,6 +82,8 @@ class StateMachineUpdater implements Runnable {
   private final Thread updater;
   private final AwaitForSignal awaitForSignal;
 
+  private final AppliedLogPrefix appliedLogPrefix;
+  private final int pendingApplyLimit;
   private final RaftLogIndex appliedIndex;
   private final RaftLogIndex snapshotIndex;
   private final AtomicReference<Long> stopIndex = new AtomicReference<>();
@@ -106,6 +108,8 @@ class StateMachineUpdater implements Runnable {
     this.server = server;
     this.raftLog = serverState.getLog();
 
+    this.appliedLogPrefix = stateMachine.supportsBoundedStaleReads() ? new AppliedLogPrefix(lastAppliedIndex) : null;
+    this.pendingApplyLimit = RaftServerConfigKeys.Write.elementLimit(properties);
     this.appliedIndex = new RaftLogIndex("appliedIndex", lastAppliedIndex);
     this.snapshotIndex = new RaftLogIndex("snapshotIndex", lastAppliedIndex);
 
@@ -128,6 +132,10 @@ class StateMachineUpdater implements Runnable {
         () -> StateMachineMetrics.getStateMachineMetrics(server, appliedIndex, stateMachine));
   }
 
+  AppliedLogPrefix getAppliedLogPrefix() {
+    return appliedLogPrefix;
+  }
+
   void start() {
     //wait for RaftServerImpl and ServerState constructors to complete
     stateMachineMetrics.get();
@@ -137,6 +145,9 @@ class StateMachineUpdater implements Runnable {
 
   private void stop() {
     state = State.STOP;
+    if (appliedLogPrefix != null) {
+      appliedLogPrefix.invalidate();
+    }
     try {
       LOG.info("{}: closing {}, lastApplied={}", name,
           JavaUtils.getClassSimpleName(stateMachine.getClass()), stateMachine.getLastAppliedTermIndex());
@@ -178,7 +189,14 @@ class StateMachineUpdater implements Runnable {
             stopIndex.get(), getLastAppliedIndex());
   }
 
+  void invalidateAppliedLogPrefix() {
+    if (appliedLogPrefix != null) {
+      appliedLogPrefix.invalidate();
+    }
+  }
+
   void reloadStateMachine() {
+    invalidateAppliedLogPrefix();
     state = State.RELOAD;
     notifyUpdater();
   }
@@ -256,13 +274,21 @@ class StateMachineUpdater implements Runnable {
     final long i = snapshot.getIndex();
     snapshotIndex.setUnconditionally(i, infoIndexChange);
     appliedIndex.setUnconditionally(i, infoIndexChange);
+    if (appliedLogPrefix != null) {
+      appliedLogPrefix.reset(i);
+    }
     notifyAppliedIndex(i);
     state = State.RUNNING;
   }
 
-  private CompletableFuture<Void> applyLog(CompletableFuture<Void> applyLogFutures) throws RaftLogIOException {
+  private CompletableFuture<Void> applyLog(CompletableFuture<Void> applyLogFutures)
+      throws RaftLogIOException, InterruptedException {
     final long committed = raftLog.getLastCommittedIndex();
     for(long applied; (applied = getLastAppliedIndex()) < committed && state == State.RUNNING && !shouldStop(); ) {
+      if (appliedLogPrefix != null && appliedLogPrefix.getPendingCount() >= pendingApplyLimit) {
+        awaitForSignal.await(100, TimeUnit.MILLISECONDS);
+        break;
+      }
       final long nextIndex = applied + 1;
       final LogEntryProto next = raftLog.get(nextIndex);
       if (next != null) {
@@ -273,6 +299,12 @@ class StateMachineUpdater implements Runnable {
         }
 
         final CompletableFuture<Message> f = server.applyLogToStateMachine(next);
+        if (appliedLogPrefix != null) {
+          appliedLogPrefix.add(next, f);
+          if (f != null) {
+            f.whenComplete((message, error) -> notifyUpdater());
+          }
+        }
         final long incremented = appliedIndex.incrementAndGet(debugIndexChange);
         Preconditions.assertTrue(incremented == nextIndex);
         if (f != null) {

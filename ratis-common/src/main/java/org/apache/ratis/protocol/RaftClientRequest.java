@@ -17,6 +17,7 @@
  */
 package org.apache.ratis.protocol;
 
+import org.apache.ratis.proto.RaftProtos.BoundedStaleReadRequestTypeProto;
 import org.apache.ratis.proto.RaftProtos.DataStreamRequestTypeProto;
 import org.apache.ratis.proto.RaftProtos.ForwardRequestTypeProto;
 import org.apache.ratis.proto.RaftProtos.MessageStreamRequestTypeProto;
@@ -30,6 +31,9 @@ import org.apache.ratis.proto.RaftProtos.WatchRequestTypeProto;
 import org.apache.ratis.proto.RaftProtos.WriteRequestTypeProto;
 import org.apache.ratis.util.Preconditions;
 import org.apache.ratis.util.ProtoUtils;
+import org.apache.ratis.util.TimeDuration;
+
+import java.util.concurrent.TimeUnit;
 
 import java.util.Collections;
 import java.util.EnumMap;
@@ -166,6 +170,21 @@ public class RaftClientRequest extends RaftClientMessage {
         : new Type(StaleReadRequestTypeProto.newBuilder().setMinIndex(minIndex).build());
   }
 
+  public static Type boundedStaleReadRequestType(long minIndex, TimeDuration maxStaleness) {
+    Objects.requireNonNull(maxStaleness, "maxStaleness == null");
+    if (minIndex < 0 || maxStaleness.isNegative()) {
+      throw new IllegalArgumentException("Negative minIndex or maxStaleness");
+    }
+    // Round the requested bound down: rounding up could weaken the caller's bound.
+    final long millis = maxStaleness.toLong(TimeUnit.MILLISECONDS);
+    if (TimeDuration.valueOf(millis, TimeUnit.MILLISECONDS).compareTo(maxStaleness) > 0
+        || millis == Long.MAX_VALUE) {
+      throw new IllegalArgumentException("Unrepresentable maxStaleness: " + maxStaleness);
+    }
+    return Type.valueOf(BoundedStaleReadRequestTypeProto.newBuilder()
+        .setMinIndex(minIndex).setMaxStalenessMs(millis).build());
+  }
+
   public static Type watchRequestType() {
     return WATCH_DEFAULT;
   }
@@ -196,6 +215,13 @@ public class RaftClientRequest extends RaftClientMessage {
 
     public static Type valueOf(StaleReadRequestTypeProto staleRead) {
       return staleRead.getMinIndex() == 0? STALE_READ_DEFAULT: new Type(staleRead);
+    }
+
+    public static Type valueOf(BoundedStaleReadRequestTypeProto boundedStaleRead) {
+      if (boundedStaleRead.getMinIndex() < 0 || boundedStaleRead.getMaxStalenessMs() < 0) {
+        throw new IllegalArgumentException("Bounded stale read exceeds signed long range");
+      }
+      return new Type(TypeCase.BOUNDEDSTALEREAD, boundedStaleRead);
     }
 
     public static Type valueOf(WatchRequestTypeProto watch) {
@@ -256,6 +282,7 @@ public class RaftClientRequest extends RaftClientMessage {
       switch (getTypeCase()) {
         case READ:
         case STALEREAD:
+        case BOUNDEDSTALEREAD:
         case WATCH:
           return true;
         case WRITE:
@@ -306,6 +333,11 @@ public class RaftClientRequest extends RaftClientMessage {
       return (StaleReadRequestTypeProto)proto;
     }
 
+    public BoundedStaleReadRequestTypeProto getBoundedStaleRead() {
+      assertType(TypeCase.BOUNDEDSTALEREAD);
+      return (BoundedStaleReadRequestTypeProto) proto;
+    }
+
     public WatchRequestTypeProto getWatch() {
       assertType(TypeCase.WATCH);
       return (WatchRequestTypeProto)proto;
@@ -341,6 +373,9 @@ public class RaftClientRequest extends RaftClientMessage {
               : "RO";
         case STALEREAD:
           return "StaleRead(" + getStaleRead().getMinIndex() + ")";
+        case BOUNDEDSTALEREAD:
+          return "BoundedStaleRead(" + getBoundedStaleRead().getMinIndex()
+              + ", " + getBoundedStaleRead().getMaxStalenessMs() + "ms)";
         case WATCH:
           return toString(getWatch());
         default:

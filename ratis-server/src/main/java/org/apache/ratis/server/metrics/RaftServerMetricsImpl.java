@@ -89,6 +89,8 @@ public final class RaftServerMetricsImpl extends RatisMetrics implements RaftSer
 
   private final LongCounter numFailedClientStaleRead
       = getRegistry().counter(RATIS_SERVER_FAILED_CLIENT_STALE_READ_COUNT);
+  private final LongCounter numBoundedStaleReadLocal = getRegistry().counter("boundedStaleReadLocalCount");
+  private final LongCounter numBoundedStaleReadFallback = getRegistry().counter("boundedStaleReadFallbackCount");
   private final LongCounter numFailedClientRead = getRegistry().counter(RATIS_SERVER_FAILED_CLIENT_READ_COUNT);
   private final LongCounter numFailedClientWrite = getRegistry().counter(RATIS_SERVER_FAILED_CLIENT_WRITE_COUNT);
   private final LongCounter numFailedClientWatch = getRegistry().counter(RATIS_SERVER_FAILED_CLIENT_WATCH_COUNT);
@@ -234,10 +236,14 @@ public final class RaftServerMetricsImpl extends RatisMetrics implements RaftSer
     return followerAppendEntryLatency.apply(isHeartbeat);
   }
 
+  public void onBoundedStaleRead(boolean local) {
+    (local ? numBoundedStaleReadLocal : numBoundedStaleReadFallback).inc();
+  }
+
   public Timekeeper getClientRequestTimer(Type request) {
     if (request.is(TypeCase.READ)) {
       return readTimer;
-    } else if (request.is(TypeCase.STALEREAD)) {
+    } else if (request.is(TypeCase.STALEREAD) || request.is(TypeCase.BOUNDEDSTALEREAD)) {
       return staleReadTimer;
     } else if (request.is(TypeCase.WATCH)) {
       return watchTimers.get(request.getWatch().getReplication());
@@ -312,7 +318,7 @@ public final class RaftServerMetricsImpl extends RatisMetrics implements RaftSer
   }
 
   public void incFailedRequestCount(Type type) {
-    if (type.is(TypeCase.STALEREAD)) {
+    if (type.is(TypeCase.STALEREAD) || type.is(TypeCase.BOUNDEDSTALEREAD)) {
       onFailedClientStaleRead();
     } else if (type.is(TypeCase.WATCH)) {
       onFailedClientWatch();

@@ -51,8 +51,10 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.LogEntryHeader;
 import org.apache.ratis.server.raftlog.LogProtoUtils;
 import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.server.raftlog.RaftLogIndex;
 import org.apache.ratis.server.util.ServerStringUtils;
 import org.apache.ratis.statemachine.TransactionContext;
+import org.apache.ratis.util.TimeoutExecutor;
 import org.apache.ratis.util.CodeInjectionForTesting;
 import org.apache.ratis.util.CollectionUtils;
 import org.apache.ratis.util.Daemon;
@@ -361,6 +363,8 @@ class LeaderStateImpl implements LeaderState {
   private final ReadIndexHeartbeats readIndexHeartbeats;
   private final RaftServerConfigKeys.Read.ReadIndex.Type readIndexType;
   private final Supplier<Long> readIndexSupplier;
+  // Retain through this leader term so even a slow serving follower can apply an already returned barrier.
+  private final RaftLogIndex freshReadIndex = new RaftLogIndex("freshReadIndex", RaftLog.INVALID_LOG_INDEX);
   private final boolean leaderHeartbeatCheckEnabled;
   private final LeaderLease lease;
 
@@ -661,7 +665,8 @@ class LeaderStateImpl implements LeaderState {
     final RaftPeerId targetId = follower.getId();
     final SpanContextProto tracing = leaderTracer.traceAppendEntries(entries);
     return ServerProtoUtils.toAppendEntriesRequestProto(server.getMemberId(), targetId, getCurrentTerm(), entries,
-        ServerImplUtils.effectiveCommitIndex(readIndexSupplier.get(), previous, entries.size()),
+        ServerImplUtils.effectiveCommitIndex(Math.max(readIndexSupplier.get(), freshReadIndex.get()),
+            previous, entries.size()),
         initializing, previous, server.getCommitInfos(), callId, tracing);
   }
 
@@ -1229,9 +1234,36 @@ class LeaderStateImpl implements LeaderState {
     return listener.getFuture();
   }
 
+  /** Validate this operation with a new quorum acknowledgement, regardless of ordinary read settings. */
+  CompletableFuture<Long> getFreshReadIndex() {
+    if (!isRunning() || !isReady()) {
+      return JavaUtils.completeExceptionally(new ReadIndexException("Leader is not ready for a validated read"));
+    }
+    final RaftConfigurationImpl configuration = server.getRaftConf();
+    final long index = raftLog.getLastCommittedIndex();
+    freshReadIndex.updateToMax(index, value -> LOG.debug("{}: {}", this, value));
+    if (configuration.hasMajority(peer -> false, server.getId())) {
+      return CompletableFuture.completedFuture(index);
+    }
+    final AppendEntriesListener listener = readIndexHeartbeats.addFreshAppendEntriesListener(
+        index, senders, acknowledged -> configuration.hasMajority(acknowledged, server.getId()));
+    final CompletableFuture<Long> future = listener.getFuture();
+    TimeoutExecutor.getInstance().onTimeout(RaftServerConfigKeys.Read.timeout(server.getRaftServer().getProperties()),
+        () -> future.completeExceptionally(new ReadIndexException("Validated ReadIndex timed out")),
+        LOG, () -> "Failed to time out validated ReadIndex");
+    return future.thenApply(readIndex -> {
+      if (!isRunning() || server.getRaftConf() != configuration) {
+        throw new CompletionException(new ReadIndexException("Leadership or configuration changed during ReadIndex"));
+      }
+      return readIndex;
+    });
+  }
+
   @Override
   public void onAppendEntriesReply(LogAppender appender, RaftProtos.AppendEntriesReplyProto reply) {
-    readIndexHeartbeats.onAppendEntriesReply(appender, reply, this::hasMajority);
+    if (reply.getTerm() == getCurrentTerm()) {
+      readIndexHeartbeats.onAppendEntriesReply(appender, reply, this::hasMajority);
+    }
   }
 
   boolean getAndSetLeaseEnabled(boolean newValue) {

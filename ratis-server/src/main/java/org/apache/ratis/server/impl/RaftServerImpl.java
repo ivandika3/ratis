@@ -1039,6 +1039,10 @@ class RaftServerImpl implements RaftServer.Division,
   }
 
   CompletableFuture<RaftClientReply> executeSubmitClientRequestAsync(RaftClientRequest request) {
+    if (request.is(TypeCase.BOUNDEDSTALEREAD)) {
+      // The bounded-read handler admits the operation before queueing it on clientExecutor.
+      return JavaUtils.callAsUnchecked(() -> submitClientRequestAsync(request), CompletionException::new);
+    }
     return CompletableFuture.supplyAsync(
         () -> JavaUtils.callAsUnchecked(() -> submitClientRequestAsync(request), CompletionException::new),
         clientExecutor).join();
@@ -1073,6 +1077,8 @@ class RaftServerImpl implements RaftServer.Division,
     switch (type) {
       case STALEREAD:
         return readRequestHandler.staleReadAsync(request);
+      case BOUNDEDSTALEREAD:
+        return readRequestHandler.boundedStaleReadAsync(request, clientExecutor);
       case READ:
         return readRequestHandler.readAsync(request);
       case WATCH:
@@ -1514,6 +1520,7 @@ class RaftServerImpl implements RaftServer.Division,
         return false;
       }
       // TODO: any other operations that needs to be paused?
+      state.getStateMachineUpdater().invalidateAppliedLogPrefix();
       stateMachine.pause();
       lifeCycle.compareAndTransition(State.PAUSING, State.PAUSED);
     }

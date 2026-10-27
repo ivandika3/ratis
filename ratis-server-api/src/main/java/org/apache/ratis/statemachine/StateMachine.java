@@ -547,6 +547,16 @@ public interface StateMachine extends Closeable {
   CompletableFuture<Message> query(Message request);
 
   /**
+   * Opt in to timestamp bounded stale reads. Successful completion of applyTransaction must make the entry
+   * query-visible. Concurrent queries must observe a coherent committed prefix including every entry whose
+   * application has completed through the prefix tracked by Ratis. Snapshot replacement must not expose
+   * partially restored state. Merely reporting a last-applied index does not establish these guarantees.
+   */
+  default boolean supportsBoundedStaleReads() {
+    return false;
+  }
+
+  /**
    * Query the state machine, provided minIndex &lt;= commit index.
    * The request must be read-only.
    * Since the commit index of this server may lag behind the Raft service,
