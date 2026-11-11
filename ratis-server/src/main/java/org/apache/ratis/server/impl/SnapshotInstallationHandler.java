@@ -234,6 +234,7 @@ class SnapshotInstallationHandler {
         // update the committed index
         // re-load the state machine if this is the last chunk
         if (snapshotChunkRequest.getDone()) {
+          state.getStateMachineUpdater().invalidateAppliedLogPrefix();
           stateMachine.pause(); // pause the SM right before publishing the snapshot atomically
           snapshotManager.finalizeSnapshot(request);
           state.reloadStateMachine(lastIncluded);
@@ -375,6 +376,7 @@ class SnapshotInstallationHandler {
       final TermIndex latestInstalledSnapshotTermIndex = this.installedSnapshotTermIndex
           .getAndSet(INVALID_TERM_INDEX);
       if (latestInstalledSnapshotTermIndex.getIndex() > INVALID_LOG_INDEX) {
+        state.getStateMachineUpdater().invalidateAppliedLogPrefix();
         server.getStateMachine().pause();
         state.reloadStateMachine(latestInstalledSnapshotTermIndex);
         LOG.info("{}: InstallSnapshot notification result: {}, at index: {}", getMemberId(),

@@ -90,9 +90,12 @@ class ReadIndexHeartbeats {
     AppendEntriesListener(long commitIndex, Iterable<LogAppender> logAppenders) {
       this.commitIndex = commitIndex;
       for (LogAppender a : logAppenders) {
-        a.triggerHeartbeat();
         replies.put(a.getFollowerId(), new HeartbeatAck(a));
       }
+    }
+
+    void triggerHeartbeats() {
+      replies.values().forEach(ack -> ack.appender.triggerHeartbeat());
     }
 
     CompletableFuture<Long> getFuture() {
@@ -105,8 +108,8 @@ class ReadIndexHeartbeats {
         return true;
       }
 
-      final HeartbeatAck reply = replies.computeIfAbsent(
-          logAppender.getFollowerId(), key -> new HeartbeatAck(logAppender));
+      final HeartbeatAck reply = replies.compute(logAppender.getFollowerId(), (key, previous) ->
+          previous == null || previous.appender != logAppender ? new HeartbeatAck(logAppender) : previous);
       if (reply.receive(proto)) {
         if (hasMajority.test(this::isAcknowledged)) {
           future.complete(commitIndex);
@@ -169,6 +172,23 @@ class ReadIndexHeartbeats {
     }
   }
 
+  private final Map<AppendEntriesListener, Predicate<Predicate<RaftPeerId>>> freshListeners
+      = new ConcurrentHashMap<>();
+  private Exception freshException;
+
+  synchronized AppendEntriesListener addFreshAppendEntriesListener(long index, Iterable<LogAppender> appenders,
+      Predicate<Predicate<RaftPeerId>> hasMajority) {
+    final AppendEntriesListener listener = new AppendEntriesListener(index, appenders);
+    if (freshException != null) {
+      listener.getFuture().completeExceptionally(freshException);
+    } else {
+      freshListeners.put(listener, hasMajority);
+      listener.getFuture().whenComplete((value, error) -> freshListeners.remove(listener));
+      listener.triggerHeartbeats();
+    }
+    return listener;
+  }
+
   private final AppendEntriesListeners appendEntriesListeners = new AppendEntriesListeners();
   private final RaftLogIndex ackedCommitIndex = new RaftLogIndex("ackedCommitIndex", RaftLog.INVALID_LOG_INDEX);
 
@@ -177,15 +197,25 @@ class ReadIndexHeartbeats {
       return null;
     }
     LOG.debug("listen commitIndex {}", commitIndex);
-    return appendEntriesListeners.add(commitIndex, constructor);
+    final AppendEntriesListener listener = appendEntriesListeners.add(commitIndex, constructor);
+    listener.triggerHeartbeats();
+    return listener;
   }
 
   void onAppendEntriesReply(LogAppender appender, AppendEntriesReplyProto reply,
                             Predicate<Predicate<RaftPeerId>> hasMajority) {
     appendEntriesListeners.onAppendEntriesReply(appender, reply, hasMajority);
+    freshListeners.forEach((listener, quorum) -> {
+      if (reply.getFollowerCommit() >= listener.commitIndex) {
+        listener.receive(appender, reply, quorum);
+      }
+    });
   }
 
-  void failListeners(Exception e) {
+  synchronized void failListeners(Exception e) {
+    freshException = e;
+    freshListeners.keySet().forEach(listener -> listener.getFuture().completeExceptionally(e));
+    freshListeners.clear();
     appendEntriesListeners.failAll(e);
   }
 }

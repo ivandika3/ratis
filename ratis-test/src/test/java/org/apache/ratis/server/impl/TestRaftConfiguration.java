@@ -33,6 +33,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestRaftConfiguration extends BaseTest {
   @Test
+  public void testSingletonReplacementRequiresRemoteReadAcknowledgement() {
+    final RaftPeerId oldLeader = RaftPeerId.valueOf("0");
+    final RaftConfigurationImpl transition = RaftConfigurationImpl.newBuilder()
+        .setConf(new PeerConfiguration(raftPeersWithPriority(1)))
+        .setOldConf(new PeerConfiguration(raftPeersWithPriority(0))).build();
+    assertTrue(transition.isSingleton());
+    assertFalse(transition.hasMajority(peer -> false, oldLeader));
+    assertTrue(transition.hasMajority(peer -> peer.equals(RaftPeerId.valueOf("1")), oldLeader));
+    final RaftConfigurationImpl replaced = RaftConfigurationImpl.newBuilder()
+        .setConf(new PeerConfiguration(raftPeersWithPriority(1))).build();
+    assertFalse(replaced.hasMajority(peer -> false, oldLeader));
+    assertTrue(replaced.hasMajority(peer -> false, RaftPeerId.valueOf("1")));
+  }
+
+  @Test
   public void testIsHighestPriority() {
     Integer node1 = 0;
     Integer node2 = 1;

@@ -154,7 +154,8 @@ public class TransactionContextImpl implements TransactionContext {
     Objects.requireNonNull(stateMachineLogEntry, "stateMachineLogEntry == null");
 
     logIndexFuture.complete(index);
-    return logEntry = LogProtoUtils.toLogEntryProto(stateMachineLogEntry, term, index);
+    return logEntry = LogProtoUtils.toLogEntryProto(stateMachineLogEntry, term, index).toBuilder()
+        .setAppendTimestampMs(System.currentTimeMillis()).build();
   }
 
   public CompletableFuture<Long> getLogIndexFuture() {

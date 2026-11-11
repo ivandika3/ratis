@@ -81,6 +81,12 @@ class BlockingImpl implements BlockingApi {
   }
 
   @Override
+  public RaftClientReply sendStaleRead(Message message, long minIndex, TimeDuration maxStaleness,
+      RaftPeerId server) throws IOException {
+    return send(RaftClientRequest.boundedStaleReadRequestType(minIndex, maxStaleness), message, server);
+  }
+
+  @Override
   public RaftClientReply watch(long index, ReplicationLevel replication) throws IOException {
     return send(RaftClientRequest.watchRequestType(index, replication), null, null);
   }

@@ -24,6 +24,7 @@ import org.apache.ratis.client.AsyncRpcApi;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.ReplicationLevel;
 import org.apache.ratis.protocol.Message;
+import org.apache.ratis.util.TimeDuration;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -71,6 +72,12 @@ class AsyncImpl implements AsyncRpcApi {
   @Override
   public CompletableFuture<RaftClientReply> sendStaleRead(Message message, long minIndex, RaftPeerId server) {
     return send(RaftClientRequest.staleReadRequestType(minIndex), message, server);
+  }
+
+  @Override
+  public CompletableFuture<RaftClientReply> sendStaleRead(Message message, long minIndex, TimeDuration maxStaleness,
+      RaftPeerId server) {
+    return send(RaftClientRequest.boundedStaleReadRequestType(minIndex, maxStaleness), message, server);
   }
 
   @Override

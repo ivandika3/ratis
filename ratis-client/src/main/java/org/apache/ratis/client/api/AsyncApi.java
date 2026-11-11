@@ -20,6 +20,7 @@ package org.apache.ratis.client.api;
 import java.util.concurrent.CompletableFuture;
 import org.apache.ratis.proto.RaftProtos.ReplicationLevel;
 import org.apache.ratis.protocol.Message;
+import org.apache.ratis.util.TimeDuration;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeerId;
 
@@ -114,6 +115,24 @@ public interface AsyncApi {
    * @return a future of the reply.
    */
   CompletableFuture<RaftClientReply> sendStaleRead(Message message, long minIndex, RaftPeerId server);
+
+  /**
+   * Read a coherent committed prefix including writes completed before server admission minus maxStaleness.
+   * Requires state-machine opt-in. Clock uncertainty must be configured to enable local timestamp checks;
+   * otherwise, or if the local prefix cannot satisfy the bound, use validated linearizable fallback.
+   * Zero staleness always uses linearizable execution. The query still executes on the selected server.
+   * Sub-millisecond bounds are rounded down. This does not provide historical snapshots or monotonic reads.
+   *
+   * @param message The query.
+   * @param minIndex The minimum query-visible log index, or zero for no dependency.
+   * @param maxStaleness The nonnegative maximum staleness at server admission.
+   * @param server The target server, or null for the leader.
+   * @return a future of the reply.
+   */
+  default CompletableFuture<RaftClientReply> sendStaleRead(Message message, long minIndex, TimeDuration maxStaleness,
+      RaftPeerId server) {
+    throw new UnsupportedOperationException("Timestamp bounded stale reads are unsupported");
+  }
 
   /**
    * Watch the given index asynchronously to satisfy the given replication level.

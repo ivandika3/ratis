@@ -58,6 +58,25 @@ import java.util.concurrent.TimeUnit;
 /** Test {@link ClientProtoUtils}. */
 public class TestClientProtoUtils extends BaseTest {
   @Test
+  public void testBoundedStaleReadRoundTrip() {
+    final RaftClientRequest request = RaftClientRequest.newBuilder()
+        .setClientId(ClientId.randomId()).setServerId(RaftPeerId.valueOf("s0"))
+        .setGroupId(RaftGroupId.randomId()).setCallId(1).setMessage(Message.EMPTY)
+        .setType(RaftClientRequest.boundedStaleReadRequestType(0, TimeDuration.valueOf(123, TimeUnit.MILLISECONDS)))
+        .build();
+    final RaftClientRequestProto proto = ClientProtoUtils.toRaftClientRequestProto(request);
+    Assertions.assertEquals(RaftClientRequestProto.TypeCase.BOUNDEDSTALEREAD, proto.getTypeCase());
+    final RaftClientRequest decoded = ClientProtoUtils.toRaftClientRequest(proto);
+    Assertions.assertTrue(decoded.getType().isReadOnly());
+    Assertions.assertEquals(123, decoded.getType().getBoundedStaleRead().getMaxStalenessMs());
+    Assertions.assertEquals(0, decoded.getType().getBoundedStaleRead().getMinIndex());
+    Assertions.assertThrows(IllegalArgumentException.class, () ->
+        RaftClientRequest.boundedStaleReadRequestType(0, TimeDuration.valueOf(-1, TimeUnit.MILLISECONDS)));
+    Assertions.assertThrows(IllegalArgumentException.class, () ->
+        RaftClientRequest.boundedStaleReadRequestType(-1, TimeDuration.ZERO));
+  }
+
+  @Test
   public void testToRaftClientRequestProto() throws Exception {
     for(int i = 1; i < 32; i <<= 2) {
       final SizeInBytes messageSize = SizeInBytes.valueOf(i + "MB");

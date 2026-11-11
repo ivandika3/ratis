@@ -95,6 +95,8 @@ message MetadataProto {
 }
 
 message LogEntryProto {
+  // Physical epoch milliseconds at original leader append; absent for legacy entries.
+  optional int64 appendTimestampMs = 6;
   uint64 term = 1;
   uint64 index = 2;
 
@@ -245,11 +247,15 @@ message InstallSnapshotReplyProto {
 }
 
 message ReadIndexRequestProto {
+  // Requires fresh quorum validation, independent of read/lease configuration.
+  bool requireFresh = 3;
   RaftRpcRequestProto serverRequest = 1;
   RaftClientRequestProto clientRequest = 2; // clientRequest is used to support read-after-write consistency
 }
 
 message ReadIndexReplyProto {
+  // Affirms requireFresh support; validation additionally requires serverReply.success. Old leaders leave this false.
+  bool fresh = 3;
   RaftRpcReplyProto serverReply = 1;
   uint64 readIndex = 2;
 }
@@ -311,6 +317,11 @@ message StaleReadRequestTypeProto {
   uint64 minIndex = 1;
 }
 
+message BoundedStaleReadRequestTypeProto {
+  uint64 minIndex = 1;
+  uint64 maxStalenessMs = 2;
+}
+
 message WatchRequestTypeProto {
   uint64 index = 1;
   ReplicationLevel replication = 2;
@@ -338,6 +349,7 @@ message RaftClientRequestProto {
     MessageStreamRequestTypeProto messageStream = 7;
     DataStreamRequestTypeProto dataStream = 8;
     ForwardRequestTypeProto forward = 9;
+    BoundedStaleReadRequestTypeProto boundedStaleRead = 10;
   }
 }
 

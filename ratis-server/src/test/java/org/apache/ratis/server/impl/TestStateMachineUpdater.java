@@ -27,6 +27,7 @@ import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
@@ -40,6 +41,50 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class TestStateMachineUpdater {
+  @Test
+  public void testMetadataWaitsForEarlierAsynchronousApplication() throws Exception {
+    final RaftProperties properties = new RaftProperties();
+    RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, false);
+    final RaftGroupMemberId member = RaftGroupMemberId.valueOf(RaftPeerId.valueOf("s0"), RaftGroupId.randomId());
+    final RaftServerImpl server = Mockito.mock(RaftServerImpl.class);
+    final ServerState state = Mockito.mock(ServerState.class);
+    final RaftLog log = Mockito.mock(RaftLog.class);
+    Mockito.when(server.getMemberId()).thenReturn(member);
+    Mockito.when(server.getSnapshotRequestHandler()).thenReturn(Mockito.mock(SnapshotManagementRequestHandler.class));
+    Mockito.when(state.getMemberId()).thenReturn(member);
+    Mockito.when(state.getLog()).thenReturn(log);
+    final BaseStateMachine sm = Mockito.spy(new BaseStateMachine());
+    Mockito.when(sm.supportsBoundedStaleReads()).thenReturn(true);
+    final LogEntryProto firstEntry = LogEntryProto.newBuilder().setIndex(1).setAppendTimestampMs(100).build();
+    final LogEntryProto metadata = LogEntryProto.newBuilder().setIndex(2).setAppendTimestampMs(110)
+        .setMetadataEntry(org.apache.ratis.proto.RaftProtos.MetadataProto.newBuilder().setCommitIndex(1)).build();
+    Mockito.when(log.getLastCommittedIndex()).thenReturn(2L);
+    Mockito.when(log.get(1)).thenReturn(firstEntry);
+    Mockito.when(log.get(2)).thenReturn(metadata);
+    final CompletableFuture<org.apache.ratis.protocol.Message> first = new CompletableFuture<>();
+    Mockito.when(server.applyLogToStateMachine(firstEntry)).thenReturn(first);
+    final CountDownLatch metadataInvoked = new CountDownLatch(1);
+    final StateMachineUpdater updater = new StateMachineUpdater(sm, server, state, 0, properties, index -> {
+      if (index == 2) {
+        metadataInvoked.countDown();
+      }
+    });
+    try {
+      updater.start();
+      Assertions.assertTrue(metadataInvoked.await(5, TimeUnit.SECONDS));
+      final AppliedLogPrefix prefix = updater.getAppliedLogPrefix();
+      final CompletableFuture<Long> read = prefix.waitToAdvance(2, prefix.getGeneration());
+      Assertions.assertFalse(read.isDone());
+      Assertions.assertFalse(prefix.canServe(110, 20, 0, 2));
+      first.complete(org.apache.ratis.protocol.Message.EMPTY);
+      Assertions.assertEquals(2L, read.get(5, TimeUnit.SECONDS));
+      Assertions.assertTrue(prefix.canServe(110, 20, 0, 2));
+    } finally {
+      first.complete(org.apache.ratis.protocol.Message.EMPTY);
+      updater.stopAndJoin();
+    }
+  }
+
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
   public void testApplyFailureClosesStateMachine(boolean shutdownFirst) throws Exception {

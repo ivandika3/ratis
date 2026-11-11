@@ -51,6 +51,17 @@ public class TestRaftServerConfigKeys {
           JavaUtils.getClassSimpleName(TestRaftServerConfigKeys.class) +
               Integer.toHexString(ThreadLocalRandom.current().nextInt())));
 
+  @Test
+  public void testClockUncertaintyRequiresExplicitConfiguration() {
+    final RaftProperties properties = new RaftProperties();
+    Assertions.assertNull(RaftServerConfigKeys.Read.clockUncertainty(properties));
+    final org.apache.ratis.util.TimeDuration bound = org.apache.ratis.util.TimeDuration.ONE_MILLISECOND;
+    RaftServerConfigKeys.Read.setClockUncertainty(properties, bound);
+    Assertions.assertEquals(bound, RaftServerConfigKeys.Read.clockUncertainty(properties));
+    Assertions.assertThrows(IllegalArgumentException.class, () -> RaftServerConfigKeys.Read.setClockUncertainty(
+        properties, org.apache.ratis.util.TimeDuration.valueOf(-1, java.util.concurrent.TimeUnit.MILLISECONDS)));
+  }
+
   @AfterAll
   public static void tearDown() throws IOException {
     FileUtils.deleteFully(ROOT_TEST_DIR.get());
