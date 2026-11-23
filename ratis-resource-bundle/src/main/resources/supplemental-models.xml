@@ -22,6 +22,20 @@ under the License.
                         xsi:schemaLocation="http://maven.apache.org/supplemental-model/1.0.0 http://maven.apache.org/xsd/supplemental-model-1.0.0.xsd">
   <!-- All of the below missing / ambiguous / full text license info verified at dependency source -->
   <!-- Artifacts with ambiguously named licenses in POM -->
+  <!-- JNA explicitly offers a choice of Apache-2.0 or LGPL; select Apache-2.0. -->
+  <supplement>
+    <project>
+      <groupId>net.java.dev.jna</groupId>
+      <artifactId>jna</artifactId>
+      <licenses>
+        <license>
+          <name>Apache License, Version 2.0</name>
+          <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+          <distribution>repo</distribution>
+        </license>
+      </licenses>
+    </project>
+  </supplement>
   <supplement>
     <project>
       <groupId>com.google.guava</groupId>

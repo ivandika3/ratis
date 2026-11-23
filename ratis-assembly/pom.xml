@@ -184,6 +184,14 @@
     <!-- Intra-project dependencies -->
     <dependency>
       <groupId>org.apache.ratis</groupId>
+      <artifactId>ratis-clock</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.ratis</groupId>
+      <artifactId>ratis-clock-clockbound</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.ratis</groupId>
       <artifactId>ratis-thirdparty-misc</artifactId>
     </dependency>
     <dependency>

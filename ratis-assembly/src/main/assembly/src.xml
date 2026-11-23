@@ -33,6 +33,8 @@
         <include>org.apache.ratis:ratis-assembly</include>
         <include>org.apache.ratis:ratis-bom</include>
         <include>org.apache.ratis:ratis-client</include>
+        <include>org.apache.ratis:ratis-clock</include>
+        <include>org.apache.ratis:ratis-clock-clockbound</include>
         <include>org.apache.ratis:ratis-common</include>
         <include>org.apache.ratis:ratis-examples</include>
         <include>org.apache.ratis:ratis-grpc</include>

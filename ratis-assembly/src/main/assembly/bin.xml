@@ -28,6 +28,12 @@
   </formats>
   <dependencySets>
     <dependencySet>
+      <outputDirectory>jars</outputDirectory>
+      <includes>
+        <include>net.java.dev.jna:jna</include>
+      </includes>
+    </dependencySet>
+    <dependencySet>
       <includes>
         <include>org.apache.ratis:ratis-examples</include>
       </includes>
@@ -46,6 +52,8 @@
       <includes>
         <include>org.apache.ratis:ratis-assembly</include>
         <include>org.apache.ratis:ratis-client</include>
+        <include>org.apache.ratis:ratis-clock</include>
+        <include>org.apache.ratis:ratis-clock-clockbound</include>
         <include>org.apache.ratis:ratis-common</include>
         <include>org.apache.ratis:ratis-grpc</include>
         <include>org.apache.ratis:ratis-netty</include>
