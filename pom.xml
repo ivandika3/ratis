@@ -54,6 +54,8 @@
   </licenses>
 
   <modules>
+    <module>ratis-clock</module>
+    <module>ratis-clock-clockbound</module>
     <module>ratis-docs</module>
     <module>ratis-proto</module>
     <module>ratis-common</module>
@@ -195,6 +197,7 @@
     <testsThreadCount>4</testsThreadCount>
 
     <slf4j.version>2.0.20</slf4j.version>
+    <jna.version>5.19.1</jna.version>
     <junit-bom.version>5.14.4</junit-bom.version>
     <mockito.version>4.11.0</mockito.version>
     <byte-buddy.version>1.18.17</byte-buddy.version>
@@ -211,6 +214,16 @@
   <dependencyManagement>
     <dependencies>
       <!-- Internal dependencies -->
+      <dependency>
+        <groupId>org.apache.ratis</groupId>
+        <artifactId>ratis-clock</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.ratis</groupId>
+        <artifactId>ratis-clock-clockbound</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <dependency>
         <artifactId>ratis-docs</artifactId>
         <groupId>org.apache.ratis</groupId>
@@ -384,6 +397,11 @@
       </dependency>
 
       <!-- External dependencies -->
+      <dependency>
+        <groupId>net.java.dev.jna</groupId>
+        <artifactId>jna</artifactId>
+        <version>${jna.version}</version>
+      </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>
         <artifactId>slf4j-api</artifactId>

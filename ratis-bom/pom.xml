@@ -57,6 +57,16 @@
     <dependencies>
       <dependency>
         <groupId>org.apache.ratis</groupId>
+        <artifactId>ratis-clock</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.ratis</groupId>
+        <artifactId>ratis-clock-clockbound</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.ratis</groupId>
         <artifactId>ratis-client</artifactId>
         <version>${project.version}</version>
       </dependency>
