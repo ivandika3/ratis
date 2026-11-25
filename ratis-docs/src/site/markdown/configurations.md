@@ -253,6 +253,62 @@ but there are tradeoffs (e.g. Write and Read performance) between different type
 | **Type**        | TimeDuration                                                                                                                                |
 | **Default**     | 10ms                                                                                                                                        |
 
+| **Property**    | `raft.server.read.read-index.batch.enabled`                                       |
+|:----------------|:----------------------------------------------------------------------------------|
+| **Description** | whether to batch follower-to-leader ReadIndex RPCs for plain linearizable reads    |
+| **Type**        | boolean                                                                           |
+| **Default**     | false                                                                             |
+
+| **Property**    | `raft.server.read.read-index.batch.element-limit` |
+|:----------------|:--------------------------------------------------|
+| **Description** | maximum admitted ReadIndex requests per division, including queued reads and retained batch members |
+| **Type**        | positive int                                      |
+| **Default**     | 4096                                              |
+
+| **Property**    | `raft.server.read.read-index.batch.threadpool.size` |
+|:----------------|:---------------------------------------------------|
+| **Description** | dedicated ReadIndex batching workers per division, configured when the division is created |
+| **Type**        | positive int                                       |
+| **Default**     | 2                                                  |
+
+| **Property**    | `raft.server.read.read-index.batch.max-in-flight` |
+|:----------------|:-------------------------------------------------|
+| **Description** | maximum number of admitted ReadIndex batches per Raft division, including batch completion |
+| **Type**        | positive int                                     |
+| **Default**     | 1                                                |
+
+When ReadIndex batching is enabled, a follower batches plain linearizable read
+requests opportunistically and sends a single ReadIndex request for all reads
+already queued when the batch is drained. The queue is detached before sending,
+so later arrivals belong to another batch. The follower does not wait to fill a
+batch. Read-after-write requests bypass batching so that the leader can evaluate
+each request's client-specific write index.
+
+Batch completion delivers the RPC response or failure to all ReadIndex futures
+in that batch in one task on the dedicated ReadIndex executor. The RPC remains asynchronous. Completing a future
+may run read continuations inline, so a large batch can delay other batches
+sharing the executor.
+
+A batch retains its in-flight slot until its ReadIndex RPC returns and batch
+completion finishes. If capacity remains, another batch is dispatched without waiting for
+earlier batches, and batches may complete out of order. When all slots are
+occupied, admitted reads remain queued. This batch-count limit is independent of
+the request-count admission limit and does not change gRPC channel selection.
+
+The element limit is configured when the division is created. It counts queued
+requests and all members of active batches until their batch completion finishes.
+Detaching the queue into a batch, completing an individual future, or cancelling
+a future does not return admission capacity early. Requests beyond the limit
+fail immediately with `ResourceUnavailableException`; admitted requests continue
+normally and the batcher remains open. No retry or blocking admission is performed
+inside the batcher.
+
+Admission capacity is returned after batch completion, including RPC failure,
+or released during shutdown cleanup. This is a request-count limit for the
+ReadIndex batching stage, not a QPS or byte limit. It does not cover read-after-write
+requests or other paths that bypass batching, subsequent applied-index waits, or
+state-machine queries. Queued-read expiration and cancellation cleanup are unchanged.
+
 | **Property**    | `raft.server.read.leader.heartbeat-check.enabled` |
 |:----------------|:--------------------------------------------------|
 | **Description** | whether to check heartbeat for read index.        |

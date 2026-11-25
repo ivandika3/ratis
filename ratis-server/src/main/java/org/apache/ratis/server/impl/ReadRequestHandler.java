@@ -20,6 +20,7 @@ package org.apache.ratis.server.impl;
 import org.apache.ratis.client.impl.ClientProtoUtils;
 import org.apache.ratis.client.impl.OrderedAsync;
 import org.apache.ratis.conf.RaftProperties;
+import org.apache.ratis.proto.RaftProtos.RaftPeerRole;
 import org.apache.ratis.proto.RaftProtos.ReadIndexReplyProto;
 import org.apache.ratis.proto.RaftProtos.ReadIndexRequestProto;
 import org.apache.ratis.proto.RaftProtos.ReadRequestTypeProto;
@@ -38,8 +39,11 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.leader.LogAppender;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.statemachine.StateMachine;
+import org.apache.ratis.util.CodeInjectionForTesting;
+import org.apache.ratis.util.ConcurrentUtils;
 import org.apache.ratis.util.JavaUtils;
 import org.apache.ratis.util.LifeCycle;
+import org.apache.ratis.util.TimeDuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +51,9 @@ import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 import static org.apache.ratis.server.impl.ServerProtoUtils.toReadIndexReplyProto;
 import static org.apache.ratis.server.impl.ServerProtoUtils.toReadIndexRequestProto;
@@ -54,11 +61,14 @@ import static org.apache.ratis.server.impl.ServerProtoUtils.toReadIndexRequestPr
 /** Handle read requests, including stale reads, linearizable reads and readIndex, for a {@link RaftServerImpl}. */
 class ReadRequestHandler {
   static final Logger LOG = LoggerFactory.getLogger(ReadRequestHandler.class);
+  private static final ThreadLocal<Boolean> READ_INDEX_THREAD = new ThreadLocal<>();
 
   private final RaftServerImpl server;
   private final ServerState state;
   private final StateMachine stateMachine;
   private final RaftServerConfigKeys.Read.Option readOption;
+  private final ExecutorService readIndexExecutor;
+  private final ReadIndexBatching readIndexBatching;
 
   private final CompletableFuture<RaftClientReply> dummySuccessReply;
 
@@ -67,6 +77,24 @@ class ReadRequestHandler {
     this.state = server.getState();
     this.stateMachine = server.getStateMachine();
     this.readOption = RaftServerConfigKeys.Read.option(properties);
+    if (RaftServerConfigKeys.Read.ReadIndex.Batch.enabled(properties)) {
+      final ThreadFactory factory = ConcurrentUtils.newThreadFactory(server.getId() + "-read-index");
+      // Mark the worker lifetime so synchronous read continuations can close without waiting on their own executor.
+      this.readIndexExecutor = Executors.newFixedThreadPool(
+          RaftServerConfigKeys.Read.ReadIndex.Batch.threadPoolSize(properties), runnable -> factory.newThread(() -> {
+            READ_INDEX_THREAD.set(true);
+            try {
+              runnable.run();
+            } finally {
+              READ_INDEX_THREAD.remove();
+            }
+          }));
+    } else {
+      this.readIndexExecutor = null;
+    }
+    this.readIndexBatching = readIndexExecutor != null ?
+        new ReadIndexBatching(readIndexExecutor, RaftServerConfigKeys.Read.ReadIndex.Batch.elementLimit(properties),
+            RaftServerConfigKeys.Read.ReadIndex.Batch.maxInFlight(properties), this::sendReadIndexAsyncImpl) : null;
 
     this.dummySuccessReply = CompletableFuture.completedFuture(RaftClientReply.newBuilder()
         .setClientId(ClientId.emptyClientId())
@@ -78,6 +106,22 @@ class ReadRequestHandler {
 
   RaftGroupMemberId getMemberId() {
     return state.getMemberId();
+  }
+
+  static boolean isReadIndexThread() {
+    return Boolean.TRUE.equals(READ_INDEX_THREAD.get());
+  }
+
+  void closeReadIndexBatching() {
+    if (readIndexBatching != null) {
+      readIndexBatching.close();
+    }
+  }
+
+  void shutdownReadIndexExecutor(TimeDuration waitTime) {
+    if (readIndexExecutor != null) {
+      ConcurrentUtils.shutdownAndWait(waitTime, readIndexExecutor);
+    }
   }
 
   CompletableFuture<RaftClientReply> staleReadAsync(RaftClientRequest request) {
@@ -113,7 +157,29 @@ class ReadRequestHandler {
     if (readException != null) {
       return JavaUtils.completeExceptionally(readException);
     }
-    final RaftPeerId leaderId = server.getInfo().getLeaderId();
+    // A batched ReadIndex carries only one client ID. Read-after-write requests retain
+    // their own write-index checks and bypass batching, including global read-after-write.
+    if (readIndexBatching != null
+        && server.getRole().getCurrentRole() == RaftPeerRole.FOLLOWER
+        && !readRequestType.getReadAfterWriteConsistent()) {
+      return readIndexBatching.submit(clientId, readRequestType);
+    }
+    return sendReadIndexAsyncImpl(clientId, readRequestType);
+  }
+
+  private CompletableFuture<ReadIndexReplyProto> sendReadIndexAsyncImpl(
+      ClientId clientId, ReadRequestTypeProto readRequestType) {
+    final LeaderStateImpl leader;
+    final RaftPeerId leaderId;
+    // Role transitions synchronize on the server, not this handler. Release the monitor before RPC or completion.
+    synchronized (server) {
+      leader = server.getRole().getLeaderState().orElse(null);
+      leaderId = leader == null ? server.getInfo().getLeaderId() : null;
+    }
+    if (leader != null) {
+      return getReadIndex(clientId, readRequestType, leader)
+          .thenApply(index -> toReadIndexReplyProto(server.getId(), getMemberId(), true, index));
+    }
     if (leaderId == null) {
       return JavaUtils.completeExceptionally(new ReadIndexException(getMemberId() + ": Leader is unknown."));
     }
@@ -231,6 +297,7 @@ class ReadRequestHandler {
     server.assertLifeCycleState(LifeCycle.States.RUNNING);
 
     final RaftPeerId peerId = RaftPeerId.valueOf(request.getServerRequest().getRequestorId());
+    CodeInjectionForTesting.execute(RaftServerImpl.READ_INDEX, server.getId(), peerId, request);
 
     final LeaderStateImpl leader = server.getRole().getLeaderState().orElse(null);
     if (leader == null) {
