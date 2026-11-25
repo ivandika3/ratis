@@ -126,15 +126,18 @@ final class ServerProtoUtils {
   }
 
   static ReadIndexReplyProto toReadIndexReplyProto(
-      RaftPeerId requestorId, RaftGroupMemberId replyId, boolean success, long index) {
-    return ReadIndexReplyProto.newBuilder()
+      RaftPeerId requestorId, RaftGroupMemberId replyId, boolean success, long index, TermIndex committed) {
+    final ReadIndexReplyProto.Builder builder = ReadIndexReplyProto.newBuilder()
         .setServerReply(toRaftRpcReplyProtoBuilder(requestorId, replyId, success))
-        .setReadIndex(index)
-        .build();
+        .setReadIndex(index);
+    if (committed != null) {
+      builder.setCommitted(committed.toProto());
+    }
+    return builder.build();
   }
 
   static ReadIndexReplyProto toReadIndexReplyProto(RaftPeerId requestorId, RaftGroupMemberId replyId) {
-    return toReadIndexReplyProto(requestorId, replyId, false, RaftLog.INVALID_LOG_INDEX);
+    return toReadIndexReplyProto(requestorId, replyId, false, RaftLog.INVALID_LOG_INDEX, null);
   }
 
   @SuppressWarnings("parameternumber")

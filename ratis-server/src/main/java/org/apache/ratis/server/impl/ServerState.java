@@ -450,6 +450,14 @@ class ServerState {
     return false;
   }
 
+  boolean updateCommitIndex(TermIndex committed) {
+    if (getLog().updateCommitIndex(committed)) {
+      getStateMachineUpdater().notifyUpdater();
+      return true;
+    }
+    return false;
+  }
+
   void notifyStateMachineUpdater() {
     getStateMachineUpdater().notifyUpdater();
   }

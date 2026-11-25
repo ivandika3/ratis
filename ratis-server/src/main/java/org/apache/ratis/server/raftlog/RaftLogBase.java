@@ -115,6 +115,15 @@ public abstract class RaftLogBase implements RaftLog {
   }
 
   @Override
+  public boolean updateCommitIndex(TermIndex committed) {
+    try (AutoCloseableLock readLock = readLock()) {
+      final long index = committed.getIndex();
+      return isOpened() && index > getLastCommittedIndex() && index <= getFlushIndex() && contains(committed)
+          && commitIndex.updateToMax(index, traceIndexChange);
+    }
+  }
+
+  @Override
   public boolean updateCommitIndex(long majorityIndex, long currentTerm, boolean isLeader) {
     final long newCommitIndex = Math.min(majorityIndex, getFlushIndex());
     if (newCommitIndex <= getLastCommittedIndex()) {

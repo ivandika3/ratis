@@ -117,6 +117,16 @@ public interface RaftLog extends RaftLogSequentialOps, Closeable {
   boolean updateCommitIndex(long majorityIndex, long currentTerm, boolean isLeader);
 
   /**
+   * Advance the commit index only if the given committed entry matches a locally flushed entry.
+   * The match check and the update must be atomic with respect to log truncation.
+   * The default implementation leaves the commit index unchanged.
+   * @return true if the commit index is changed; otherwise, return false.
+   */
+  default boolean updateCommitIndex(TermIndex committed) {
+    return false;
+  }
+
+  /**
    * Update the snapshot index with the given index.
    * Note that the commit index may also be changed by this update.
    */

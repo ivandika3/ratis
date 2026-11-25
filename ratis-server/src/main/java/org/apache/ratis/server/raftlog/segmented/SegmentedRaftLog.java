@@ -237,7 +237,7 @@ public final class SegmentedRaftLog extends RaftLogBase {
     final File openSegmentFile = Optional.ofNullable(cache.getOpenSegment()).map(LogSegment::getFile).orElse(null);
     fileLogWorker.start(Math.max(cache.getEndIndex(), lastIndexInSnapshot),
         Math.min(cache.getLastIndexInClosedSegments(), lastIndexInSnapshot),
-        openSegmentFile);
+        openSegmentFile, cache.getLastTermIndex());
   }
 
   @Override
@@ -487,6 +487,17 @@ public final class SegmentedRaftLog extends RaftLogBase {
     }
   }
 
+
+  @Override
+  public boolean updateCommitIndex(TermIndex committed) {
+    // Always lock this check, even when ordinary log read locking is disabled.
+    try (AutoCloseableLock readLock = super.readLock()) {
+      final TermIndex flushed = fileLogWorker.getFlushedTermIndex();
+      // A numeric flush index can still describe a suffix that has since been replaced in the cache.
+      return isOpened() && flushed != null && committed.getIndex() <= flushed.getIndex() && contains(flushed)
+          && super.updateCommitIndex(committed);
+    }
+  }
 
   @Override
   public long getFlushIndex() {

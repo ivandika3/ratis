@@ -26,6 +26,7 @@ import org.apache.ratis.protocol.exceptions.TimeoutIOException;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.metrics.SegmentedRaftLogMetrics;
+import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.LogProtoUtils;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.raftlog.RaftLogIOException;
@@ -175,6 +176,9 @@ class SegmentedRaftLogWorker {
   private int pendingFlushNum = 0;
   /** the index of the last entry that has been written */
   private long lastWrittenIndex;
+  private TermIndex lastWrittenTermIndex;
+  /** The endpoint of a prefix whose log and state-machine data flush have both completed. */
+  private volatile TermIndex flushedTermIndex;
   private volatile int flushBatchSize = 0;
   /** the largest index of the entry that has been flushed */
   private final RaftLogIndex flushIndex = new RaftLogIndex("flushIndex", 0);
@@ -243,9 +247,11 @@ class SegmentedRaftLogWorker {
         : ConcurrentUtils.newSingleThreadExecutor(name + "-flush");
   }
 
-  void start(long latestIndex, long evictIndex, File openSegmentFile) throws IOException {
+  void start(long latestIndex, long evictIndex, File openSegmentFile, TermIndex latestTermIndex) throws IOException {
     LOG.trace("{} start(latestIndex={}, openSegmentFile={})", name, latestIndex, openSegmentFile);
     lastWrittenIndex = latestIndex;
+    lastWrittenTermIndex = latestTermIndex;
+    flushedTermIndex = latestTermIndex;
     flushIndex.setUnconditionally(latestIndex, infoIndexChange);
     safeCacheEvictIndex.setUnconditionally(evictIndex, infoIndexChange);
     if (openSegmentFile != null) {
@@ -275,6 +281,7 @@ class SegmentedRaftLogWorker {
   void syncWithSnapshot(long lastSnapshotIndex) {
     queue.clear();
     lastWrittenIndex = lastSnapshotIndex;
+    flushedTermIndex = null;
     flushIndex.setUnconditionally(lastSnapshotIndex, infoIndexChange);
     safeCacheEvictIndex.setUnconditionally(lastSnapshotIndex, infoIndexChange);
     pendingFlushNum = 0;
@@ -396,7 +403,7 @@ class SegmentedRaftLogWorker {
         flushBatchSize = (int)(lastWrittenIndex - flushIndex.get());
         if (unsafeFlush) {
           // unsafe-flush: call updateFlushedIndexIncreasingly() without waiting the underlying FileChannel.force(..).
-          unsafeFlushOutStream();
+          unsafeFlushOutStream(f);
           updateFlushedIndexIncreasingly();
         } else if (asyncFlush) {
           asyncFlushOutStream(f);
@@ -405,25 +412,30 @@ class SegmentedRaftLogWorker {
           if (!stateMachineDataPolicy.isSync()) {
             IOUtils.getFromFuture(f, () -> this + "-flushStateMachineData");
           }
+          flushedTermIndex = lastWrittenTermIndex;
           updateFlushedIndexIncreasingly();
         }
       }
     }
   }
 
-  private void unsafeFlushOutStream() throws IOException {
+  private void unsafeFlushOutStream(CompletableFuture<Void> stateMachineFlush) throws IOException {
     final Timekeeper.Context logSyncTimerContext = raftLogMetrics.getSyncTimer().time();
-    out.asyncFlush(flushExecutor).whenComplete((v, e) -> logSyncTimerContext.stop());
+    final TermIndex scheduled = lastWrittenTermIndex;
+    out.asyncFlush(flushExecutor).whenComplete((v, e) -> logSyncTimerContext.stop())
+        .thenCombine(stateMachineFlush, (v, sm) -> v).thenRun(() -> flushedTermIndex = scheduled);
   }
 
   private void asyncFlushOutStream(CompletableFuture<Void> stateMachineFlush) throws IOException {
     final long scheduledFlushIndex = lastWrittenIndex;
+    final TermIndex scheduled = lastWrittenTermIndex;
     final Timekeeper.Context logSyncTimerContext = raftLogMetrics.getSyncTimer().time();
     out.asyncFlush(flushExecutor)
         .thenCombine(stateMachineFlush, (async, sm) -> async)
         .whenComplete((v, e) -> {
           logSyncTimerContext.stop();
           if (e == null) {
+            flushedTermIndex = scheduled;
             updateFlushedIndexIncreasingly(scheduledFlushIndex);
           } else {
             LOG.error("{} Failed asyncFlush", this, e);
@@ -580,6 +592,7 @@ class SegmentedRaftLogWorker {
           "lastWrittenIndex == %s, entry == %s", lastWrittenIndex, entry);
       out.write(entry);
       lastWrittenIndex = entry.getIndex();
+      lastWrittenTermIndex = TermIndex.valueOf(entry);
       pendingFlushNum++;
       flushIfNecessary();
     }
@@ -755,6 +768,10 @@ class SegmentedRaftLogWorker {
 
   long getFlushIndex() {
     return flushIndex.get();
+  }
+
+  TermIndex getFlushedTermIndex() {
+    return flushedTermIndex;
   }
 
   long getSafeCacheEvictIndex() {

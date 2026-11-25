@@ -252,6 +252,7 @@ message ReadIndexRequestProto {
 message ReadIndexReplyProto {
   RaftRpcReplyProto serverReply = 1;
   uint64 readIndex = 2;
+  TermIndexProto committed = 3; // The committed entry at readIndex, if its term is available.
 }
 
 message ClientMessageEntryProto {

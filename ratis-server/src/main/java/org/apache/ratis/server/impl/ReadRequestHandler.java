@@ -35,7 +35,7 @@ import org.apache.ratis.protocol.exceptions.ReadIndexException;
 import org.apache.ratis.protocol.exceptions.StaleReadException;
 import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.server.RaftServerConfigKeys;
-import org.apache.ratis.server.leader.LogAppender;
+import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.statemachine.StateMachine;
 import org.apache.ratis.util.JavaUtils;
@@ -133,12 +133,38 @@ class ReadRequestHandler {
     }
     return sendReadIndexAsync(clientId, readRequestType).thenApply(reply -> {
       if (reply.getServerReply().getSuccess()) {
+        updateCommitIndex(reply);
         return reply.getReadIndex();
       } else {
         throw new CompletionException(new ReadIndexException(server.getId()
                 + ": Failed to get read index from the leader: " + reply));
       }
     });
+  }
+
+  private void updateCommitIndex(ReadIndexReplyProto reply) {
+    if (!reply.hasCommitted() || reply.getCommitted().getIndex() != reply.getReadIndex()) {
+      return;
+    }
+    synchronized (server) {
+      if (server.getInfo().getLifeCycleState() == LifeCycle.State.RUNNING
+          && getReadExceptionIfInstallingSnapshot("update commit index") == null
+          && state.updateCommitIndex(TermIndex.valueOf(reply.getCommitted()))) {
+        server.updateCommitInfoCache();
+      }
+    }
+  }
+
+  private ReadIndexReplyProto newReadIndexReply(RaftPeerId peerId, long index) {
+    synchronized (server) {
+      if (server.getInfo().getLifeCycleState() != LifeCycle.State.RUNNING) {
+        return toReadIndexReplyProto(peerId, getMemberId());
+      }
+      final RaftLog log = state.getLog();
+      final TermIndex committed = index >= RaftLog.LEAST_VALID_LOG_INDEX && index <= log.getLastCommittedIndex()
+          ? log.getTermIndex(index) : null;
+      return toReadIndexReplyProto(peerId, getMemberId(), true, index, committed);
+    }
   }
 
   CompletableFuture<Message> readOnlyAsync(ClientId clientId, ReadRequestTypeProto readRequestType,
@@ -239,20 +265,7 @@ class ReadRequestHandler {
 
     final RaftClientRequest clientRequest = ClientProtoUtils.toRaftClientRequest(request.getClientRequest());
     return getReadIndex(clientRequest.getClientId(), clientRequest.getType().getRead(), leader)
-        .thenApply(index -> toReadIndexReplyProto(peerId, getMemberId(), true, index))
-        .whenComplete((reply, exception) -> {
-          if (exception == null) {
-            // Leader should try to trigger heartbeat immediately after leader replies the ReadIndex to the follower
-            // so that the follower's commitIndex can be updated to the leader's commitIndex and the follower
-            // can start applying the logs up until the leader's commitIndex (instead of waiting for the next
-            // AppendEntries to happen through heartbeat or new transactions (which might increase the latency
-            // considerably)).
-            // Note that if the follower commitIndex is already equal to the leader's commitIndex, no heartbeat
-            // will be triggered, see GrpcLogAppender#isFollowerCommitBehindLastCommitIndex.
-            RaftPeerId requestorId = RaftPeerId.valueOf(reply.getServerReply().getRequestorId());
-            leader.getLogAppender(requestorId).ifPresent(LogAppender::triggerHeartbeat);
-          }
-        })
+        .thenApply(index -> newReadIndexReply(peerId, index))
         .exceptionally(throwable -> toReadIndexReplyProto(peerId, getMemberId()));
   }
 }
