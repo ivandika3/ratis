@@ -84,6 +84,7 @@ on:
 env:
   MAVEN_ARGS: --batch-mode --show-version
   MAVEN_OPTS: -Daether.connector.http.connectionMaxTtl=25 -Daether.connector.http.retryHandler.count=5 -Daether.connector.http.retryHandler.intervalMax=30000
+  MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
   SCRIPT: ${{ inputs.script }}
   WITH_COVERAGE: ${{ github.event_name == 'push' }}
 
@@ -166,6 +167,13 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: dev-support/linearizability-checker/go.sum
+
+      - name: Cache Maven wrapper distribution
+        if: ${{ inputs.script != 'author' }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2/wrapper/dists
+          key: maven-wrapper-google-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
 
       - name: Prepare Maven wrapper
         if: ${{ inputs.script != 'author' }}
