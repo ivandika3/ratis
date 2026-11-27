@@ -31,8 +31,10 @@ if [[ -z "${SPOTBUGS_VERSION:-}" ]]; then
 fi
 
 _install_spotbugs() {
-  echo "https://repo.maven.apache.org/maven2/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz"
-  curl -LSs "https://repo.maven.apache.org/maven2/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" | tar -xz -f - || exit 1
+  local repository="${MVNW_REPOURL:-https://repo.maven.apache.org/maven2}"
+  local url="${repository%/}/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz"
+  echo "$url"
+  curl -fLSs "$url" | tar -xz -f - || exit 1
   find "spotbugs-${SPOTBUGS_VERSION}"/bin -type f -print0 | xargs -0 --no-run-if-empty chmod +x
 }
 

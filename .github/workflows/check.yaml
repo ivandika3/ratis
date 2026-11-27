@@ -175,6 +175,10 @@ jobs:
           path: ~/.m2/wrapper/dists
           key: maven-wrapper-google-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
 
+      - name: Configure Maven Central mirror
+        if: ${{ inputs.script != 'author' }}
+        run: python3 dev-support/configure-maven-mirror.py
+
       - name: Prepare Maven wrapper
         if: ${{ inputs.script != 'author' }}
         run: |
