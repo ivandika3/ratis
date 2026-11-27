@@ -541,7 +541,10 @@ public class GrpcLogAppender extends LogAppenderBase {
       notifyAppendEntriesListener(l -> l.onReply(reply));
       if (request != null) {
         request.stopRequestTimer(); // Update completion time
-        getFollower().updateLastRespondedAppendEntriesSendTime(request.getSendTime());
+        if (reply.getTerm() == request.leaderTerm
+            && (reply.getResult() == AppendResult.SUCCESS || reply.getResult() == AppendResult.INCONSISTENCY)) {
+          getFollower().updateLastRespondedAppendEntriesSendTime(request.getSendTime());
+        }
       }
       getFollower().updateLastRpcResponseTime();
 
@@ -908,6 +911,7 @@ public class GrpcLogAppender extends LogAppenderBase {
     private volatile Timekeeper.Context timerContext;
 
     private final long callId;
+    private final long leaderTerm;
     private final TermIndex previousLog;
     private final int entriesCount;
 
@@ -918,6 +922,7 @@ public class GrpcLogAppender extends LogAppenderBase {
 
     AppendEntriesRequest(AppendEntriesRequestProto proto, RaftPeerId followerId, GrpcServerMetrics grpcServerMetrics) {
       this.callId = proto.getServerRequest().getCallId();
+      this.leaderTerm = proto.getLeaderTerm();
       this.previousLog = proto.hasPreviousLog()? TermIndex.valueOf(proto.getPreviousLog()): null;
       this.entriesCount = proto.getEntriesCount();
       this.firstEntry = entriesCount > 0? TermIndex.valueOf(proto.getEntries(0)): null;

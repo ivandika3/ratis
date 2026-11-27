@@ -18,6 +18,7 @@
 package org.apache.ratis.server.leader;
 
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto.AppendResult;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotReplyProto;
 import org.apache.ratis.proto.RaftProtos.InstallSnapshotRequestProto;
@@ -99,7 +100,10 @@ class LogAppenderDefault extends LogAppenderBase {
         final long first = proto.getEntriesCount() > 0 ? proto.getEntries(0).getIndex() : RaftLog.INVALID_LOG_INDEX;
         requestFirstIndex.set(first);
         getFollower().updateLastRpcResponseTime();
-        getFollower().updateLastRespondedAppendEntriesSendTime(sendTime);
+        if (reply.getTerm() == proto.getLeaderTerm()
+            && (reply.getResult() == AppendResult.SUCCESS || reply.getResult() == AppendResult.INCONSISTENCY)) {
+          getFollower().updateLastRespondedAppendEntriesSendTime(sendTime);
+        }
 
         getLeaderState().onFollowerCommitIndex(getFollower(), reply.getFollowerCommit());
         return new AppendEntriesResult(reply, proto);
