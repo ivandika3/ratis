@@ -121,7 +121,7 @@ class ReadIndexHeartbeats {
     }
   }
 
-  class AppendEntriesListeners {
+  static class AppendEntriesListeners {
     private final NavigableMap<Long, List<AppendEntriesListener>> sorted = new TreeMap<>();
     private Exception exception = null;
 
