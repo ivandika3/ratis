@@ -20,14 +20,14 @@ package org.apache.ratis.server.impl;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.leader.LogAppender;
-import org.apache.ratis.server.raftlog.RaftLog;
-import org.apache.ratis.server.raftlog.RaftLogIndex;
 import org.apache.ratis.util.JavaUtils;
 import org.apache.ratis.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
@@ -90,8 +90,8 @@ class ReadIndexHeartbeats {
     AppendEntriesListener(long commitIndex, Iterable<LogAppender> logAppenders) {
       this.commitIndex = commitIndex;
       for (LogAppender a : logAppenders) {
-        a.triggerHeartbeat();
         replies.put(a.getFollowerId(), new HeartbeatAck(a));
+        a.triggerHeartbeat();
       }
     }
 
@@ -109,7 +109,6 @@ class ReadIndexHeartbeats {
           logAppender.getFollowerId(), key -> new HeartbeatAck(logAppender));
       if (reply.receive(proto)) {
         if (hasMajority.test(this::isAcknowledged)) {
-          future.complete(commitIndex);
           return true;
         }
       }
@@ -123,7 +122,7 @@ class ReadIndexHeartbeats {
   }
 
   class AppendEntriesListeners {
-    private final NavigableMap<Long, AppendEntriesListener> sorted = new TreeMap<>();
+    private final NavigableMap<Long, List<AppendEntriesListener>> sorted = new TreeMap<>();
     private Exception exception = null;
 
     synchronized AppendEntriesListener add(long commitIndex, Function<Long, AppendEntriesListener> constructor) {
@@ -133,49 +132,56 @@ class ReadIndexHeartbeats {
         listener.getFuture().completeExceptionally(exception);
         return listener;
       }
-      return sorted.computeIfAbsent(commitIndex, constructor);
+      final AppendEntriesListener listener = constructor.apply(commitIndex);
+      sorted.computeIfAbsent(commitIndex, index -> new ArrayList<>()).add(listener);
+      return listener;
     }
 
-    synchronized void onAppendEntriesReply(LogAppender appender, AppendEntriesReplyProto reply,
-                                           Predicate<Predicate<RaftPeerId>> hasMajority) {
+    void onAppendEntriesReply(LogAppender appender, AppendEntriesReplyProto reply,
+        Predicate<Predicate<RaftPeerId>> hasMajority) {
       final long followerCommit = reply.getFollowerCommit();
+      final List<AppendEntriesListener> completed = new ArrayList<>();
+      synchronized (this) {
+        final Iterator<Map.Entry<Long, List<AppendEntriesListener>>> iterator = sorted.entrySet().iterator();
+        while (iterator.hasNext()) {
+          final Map.Entry<Long, List<AppendEntriesListener>> entry = iterator.next();
+          if (entry.getKey() > followerCommit) {
+            break;
+          }
+          final Iterator<AppendEntriesListener> listeners = entry.getValue().iterator();
+          while (listeners.hasNext()) {
+            final AppendEntriesListener listener = listeners.next();
+            if (listener.receive(appender, reply, hasMajority)) {
+              completed.add(listener);
+              listeners.remove();
+            }
+          }
+          if (entry.getValue().isEmpty()) {
+            iterator.remove();
+          }
+        }
+      }
+      // Completion callbacks may submit another read; remove listeners before invoking those callbacks.
+      completed.forEach(listener -> listener.getFuture().complete(listener.commitIndex));
+    }
 
-      Iterator<Map.Entry<Long, AppendEntriesListener>> iterator = sorted.entrySet().iterator();
-      while (iterator.hasNext()) {
-        Map.Entry<Long, AppendEntriesListener> entry = iterator.next();
-        if (entry.getKey() > followerCommit) {
+    void failAll(Exception e) {
+      final List<AppendEntriesListener> failed = new ArrayList<>();
+      synchronized (this) {
+        if (exception != null) {
           return;
         }
-
-        final AppendEntriesListener listener = entry.getValue();
-        if (listener == null) {
-          continue;
-        }
-
-        if (listener.receive(appender, reply, hasMajority)) {
-          ackedCommitIndex.updateToMax(listener.commitIndex, s -> LOG.debug("{}: {}", this, s));
-          iterator.remove();
-        }
+        exception = e;
+        sorted.values().forEach(failed::addAll);
+        sorted.clear();
       }
-    }
-
-    synchronized void failAll(Exception e) {
-      if (exception != null) {
-        return;
-      }
-      exception = e;
-      sorted.forEach((index, listener) -> listener.getFuture().completeExceptionally(e));
-      sorted.clear();
+      failed.forEach(listener -> listener.getFuture().completeExceptionally(e));
     }
   }
 
   private final AppendEntriesListeners appendEntriesListeners = new AppendEntriesListeners();
-  private final RaftLogIndex ackedCommitIndex = new RaftLogIndex("ackedCommitIndex", RaftLog.INVALID_LOG_INDEX);
 
   AppendEntriesListener addAppendEntriesListener(long commitIndex, Function<Long, AppendEntriesListener> constructor) {
-    if (commitIndex <= ackedCommitIndex.get()) {
-      return null;
-    }
     LOG.debug("listen commitIndex {}", commitIndex);
     return appendEntriesListeners.add(commitIndex, constructor);
   }

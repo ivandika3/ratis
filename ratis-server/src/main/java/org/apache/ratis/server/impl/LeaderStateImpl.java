@@ -1224,11 +1224,6 @@ class LeaderStateImpl implements LeaderState {
     final AppendEntriesListener listener = readIndexHeartbeats.addAppendEntriesListener(
         readIndex, i -> new AppendEntriesListener(i, senders));
 
-    // the readIndex is already acknowledged before
-    if (listener == null) {
-      return CompletableFuture.completedFuture(readIndex);
-    }
-
     return listener.getFuture();
   }
 
