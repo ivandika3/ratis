@@ -160,6 +160,13 @@ jobs:
           distribution: 'temurin'
           java-version: ${{ inputs.java-version }}
 
+      - name: Setup Go for robustness checker
+        if: ${{ inputs.script == 'robustness' }}
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: dev-support/linearizability-checker/go.sum
+
       - name: Execute tests
         run: |
           $COMMAND

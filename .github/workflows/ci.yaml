@@ -124,6 +124,17 @@ jobs:
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
 
+  robustness:
+    if: github.event_name != 'pull_request'
+    uses: $/.github/workflows/check.yaml
+    with:
+      java-version: '17'
+      script: robustness
+      script-args: -Dratis.robustness.seed=${{ github.run_id }}
+      timeout-minutes: 30
+    secrets:
+      DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+
   coverage:
     needs:
       - build
