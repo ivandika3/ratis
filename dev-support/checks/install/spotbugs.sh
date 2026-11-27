@@ -18,7 +18,12 @@
 # Requires _install_tool from _lib.sh.  Use `source` for both scripts, because it modifies $PATH.
 
 _get_spotbugs_version() {
-  MAVEN_ARGS='' ${MVN} -q -DforceStdout -Dscan=false help:evaluate -Dexpression=spotbugs.version 2>/dev/null || echo '4.8.6'
+  local version
+  if version="$(MAVEN_ARGS='' "${MVN}" -q -DforceStdout -Dscan=false help:evaluate -Dexpression=spotbugs.version 2>/dev/null)"; then
+    printf '%s\n' "$version"
+  else
+    printf '%s\n' '4.8.6'
+  fi
 }
 
 if [[ -z "${SPOTBUGS_VERSION:-}" ]]; then
