@@ -167,6 +167,22 @@ jobs:
           go-version: stable
           cache-dependency-path: dev-support/linearizability-checker/go.sum
 
+      - name: Prepare Maven wrapper
+        if: ${{ inputs.script != 'author' }}
+        run: |
+          for attempt in 1 2 3; do
+            if ./mvnw --version; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            echo "Maven wrapper startup failed; retrying in 5 seconds (attempt $attempt of 3)."
+            sleep 5
+          done
+        env:
+          MVNW_VERBOSE: true
+
       - name: Execute tests
         run: |
           $COMMAND
