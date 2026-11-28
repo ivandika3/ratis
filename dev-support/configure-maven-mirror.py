@@ -27,4 +27,17 @@ mirrors = ET.SubElement(root, namespace + 'mirrors')
 mirror = ET.SubElement(mirrors, namespace + 'mirror')
 for name, value in {'id': 'google-central', 'url': os.environ['MVNW_REPOURL'], 'mirrorOf': 'central'}.items():
     ET.SubElement(mirror, namespace + name).text = value
+
+# Artifact comparison needs the effective repository ID, including in nested release builds.
+profiles = root.find(namespace + 'profiles')
+if profiles is None:
+    profiles = ET.SubElement(root, namespace + 'profiles')
+profile = ET.SubElement(profiles, namespace + 'profile')
+ET.SubElement(profile, namespace + 'id').text = 'google-central'
+properties = ET.SubElement(profile, namespace + 'properties')
+ET.SubElement(properties, namespace + 'reference.repo').text = 'google-central'
+active_profiles = root.find(namespace + 'activeProfiles')
+if active_profiles is None:
+    active_profiles = ET.SubElement(root, namespace + 'activeProfiles')
+ET.SubElement(active_profiles, namespace + 'activeProfile').text = 'google-central'
 tree.write(path, encoding='UTF-8', xml_declaration=True)
