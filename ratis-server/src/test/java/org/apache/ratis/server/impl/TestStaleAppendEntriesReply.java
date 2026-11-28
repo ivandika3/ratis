@@ -22,7 +22,6 @@ import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto.AppendResult;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
-import org.apache.ratis.proto.RaftProtos.LogEntryProto;
 import org.apache.ratis.proto.RaftProtos.RaftGroupIdProto;
 import org.apache.ratis.proto.RaftProtos.RaftRpcRequestProto;
 import org.apache.ratis.protocol.RaftGroup;
@@ -34,10 +33,12 @@ import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.protocol.RaftServerProtocol.Op;
+import org.apache.ratis.server.raftlog.LogProtoUtils;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.util.CodeInjectionForTesting;
 import org.apache.ratis.util.FileUtils;
+import org.apache.ratis.util.JavaUtils;
 import org.apache.ratis.util.TimeDuration;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,8 @@ public class TestStaleAppendEntriesReply extends BaseTest {
       // Move the follower to term 1 under LEADER and confirm a normal append succeeds.
       Assertions.assertEquals(AppendResult.SUCCESS,
           follower.appendEntries(appendEntries(group, oldTerm, 0, 0)).getResult());
+      JavaUtils.attempt(() -> Assertions.assertEquals(0, follower.getState().getLastAppliedIndex()),
+          100, HUNDRED_MILLIS, "initial append applied", LOG);
 
       // Hold the next (old-leader) append right before it reaches the RaftLog.
       final AppendBlocker blocker = new AppendBlocker();
@@ -176,7 +179,7 @@ public class TestStaleAppendEntriesReply extends BaseTest {
             .build())
         .setLeaderTerm(term)
         .setLeaderCommit(0)
-        .addEntries(LogEntryProto.newBuilder().setTerm(term).setIndex(index).build());
+        .addEntries(LogProtoUtils.toLogEntryProto(0, term, index));
     if (previous != null) {
       b.setPreviousLog(previous.toProto());
     }

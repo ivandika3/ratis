@@ -20,19 +20,25 @@ package org.apache.ratis.grpc;
 import org.apache.ratis.RaftTestUtil;
 import org.apache.ratis.ReadOnlyRequestTests.CounterStateMachine;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys.Read.ReadIndex.Type;
 import org.apache.ratis.server.impl.MiniRaftCluster;
 import org.apache.ratis.server.impl.ReplyFlusher;
+import org.apache.ratis.statemachine.StateMachine;
 import org.apache.ratis.util.CodeInjectionForTesting;
 import org.apache.ratis.util.JavaUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.ratis.ReadOnlyRequestTests.INCREMENT;
 import static org.apache.ratis.ReadOnlyRequestTests.QUERY;
@@ -47,6 +53,100 @@ public class TestLinearizableReadRepliedIndexWithGrpc
   @Override
   public Type readIndexType() {
     return Type.REPLIED_INDEX;
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void testLeaderReadPreservesFollowerReadOrder(boolean local) throws Exception {
+    runWithNewCluster(cluster -> {
+      final RaftServer.Division leader = RaftTestUtil.waitForLeader(cluster);
+      final CounterStateMachine stateMachine = (CounterStateMachine)leader.getStateMachine();
+      final RaftPeerId follower = cluster.getFollowers().get(0).getId();
+      final BlockingCode blockingReplyFlusher = new BlockingCode();
+      try (RaftClient writer = cluster.createClient(leader.getId());
+           RaftClient leaderReader = cluster.createClient(leader.getId());
+           RaftClient followerReader = cluster.createClient(follower)) {
+        assertReplyExact(0, leaderReader.async().sendReadOnly(QUERY, leader.getId()).get(10, TimeUnit.SECONDS));
+        assertReplyExact(0, followerReader.async().sendReadOnly(QUERY, follower).get(10, TimeUnit.SECONDS));
+        CodeInjectionForTesting.put(ReplyFlusher.FLUSH, blockingReplyFlusher);
+        try {
+          blockingReplyFlusher.entered.get(10, TimeUnit.SECONDS);
+          final CompletableFuture<RaftClientReply> write = writer.async().send(INCREMENT);
+          JavaUtils.attempt(() -> assertEquals(1, stateMachine.getCount()),
+              100, HUNDRED_MILLIS, "leader applied increment while write reply is held", LOG);
+          assertFalse(write.isDone(), "Write reply must remain held while the leader exposes its applied state");
+
+          if (local) {
+            assertEquals("1", leader.readOnlyAsync(QUERY).get(10, TimeUnit.SECONDS).getContent().toStringUtf8());
+          } else {
+            assertReplyExact(1, leaderReader.async().sendReadOnly(QUERY, leader.getId()).get(10, TimeUnit.SECONDS));
+          }
+          assertReplyExact(1, followerReader.async().sendReadOnly(QUERY, follower).get(10, TimeUnit.SECONDS));
+          assertFalse(write.isDone(), "Read ordering must not require flushing the held write reply");
+        } finally {
+          blockingReplyFlusher.complete();
+          CodeInjectionForTesting.remove(ReplyFlusher.FLUSH);
+        }
+      }
+    });
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  public void testFollowerReadPreservesReadOrderAfterBecomingLeader(boolean local) throws Exception {
+    getProperties().setClass(MiniRaftCluster.STATEMACHINE_CLASS_KEY,
+        BlockingQueryStateMachine.class, StateMachine.class);
+    try {
+      runWithNewCluster(cluster -> {
+        final RaftServer.Division previousLeader = RaftTestUtil.waitForLeader(cluster);
+        final RaftServer.Division nextLeader = cluster.getFollowers().get(0);
+        final BlockingQueryStateMachine stateMachine = (BlockingQueryStateMachine)nextLeader.getStateMachine();
+        final CompletableFuture<Void> queryGate = new CompletableFuture<>();
+        final BlockingCode blockingReplyFlusher = new BlockingCode();
+        try (RaftClient writer = cluster.createClient(nextLeader.getId());
+             RaftClient nextLeaderReader = cluster.createClient(nextLeader.getId());
+             RaftClient followerReader = cluster.createClient(previousLeader.getId())) {
+          // Bootstrap the clients before delaying a query so no later dummy read can publish the increment.
+          assertReplyExact(0, writer.async().sendReadOnly(QUERY, nextLeader.getId()).get(10, TimeUnit.SECONDS));
+          assertReplyExact(0, nextLeaderReader.async().sendReadOnly(QUERY, nextLeader.getId())
+              .get(10, TimeUnit.SECONDS));
+          assertReplyExact(0, followerReader.async().sendReadOnly(QUERY, previousLeader.getId())
+              .get(10, TimeUnit.SECONDS));
+          stateMachine.queryGate = queryGate;
+          try {
+            final CompletableFuture<Message> read = local ? nextLeader.readOnlyAsync(QUERY)
+                : nextLeaderReader.async().sendReadOnly(QUERY, nextLeader.getId()).thenApply(reply -> {
+                  assertTrue(reply.isSuccess());
+                  return reply.getMessage();
+                });
+            stateMachine.queryEntered.get(10, TimeUnit.SECONDS);
+            assertFalse(nextLeader.getInfo().isLeader(), "Query must start while its server is still a follower");
+            assertTrue(followerReader.admin().transferLeadership(nextLeader.getId(), 10_000).isSuccess());
+            assertEquals(nextLeader.getId(), RaftTestUtil.waitForLeader(cluster).getId());
+
+            CodeInjectionForTesting.put(ReplyFlusher.FLUSH, blockingReplyFlusher);
+            blockingReplyFlusher.entered.get(10, TimeUnit.SECONDS);
+            final CompletableFuture<RaftClientReply> write = writer.async().send(INCREMENT);
+            JavaUtils.attempt(() -> assertEquals(1, stateMachine.getCount()),
+                100, HUNDRED_MILLIS, "new leader applied increment while write reply is held", LOG);
+            assertFalse(write.isDone(), "Write reply must remain held while the promoted server exposes its state");
+
+            // The query started on a follower but observes a write applied after that server became leader.
+            queryGate.complete(null);
+            assertEquals("1", read.get(10, TimeUnit.SECONDS).getContent().toStringUtf8());
+            assertReplyExact(1, followerReader.async().sendReadOnly(QUERY, previousLeader.getId())
+                .get(10, TimeUnit.SECONDS));
+            assertFalse(write.isDone(), "Read ordering must not require flushing the held write reply");
+          } finally {
+            queryGate.complete(null);
+            blockingReplyFlusher.complete();
+            CodeInjectionForTesting.remove(ReplyFlusher.FLUSH);
+          }
+        }
+      });
+    } finally {
+      getProperties().setClass(MiniRaftCluster.STATEMACHINE_CLASS_KEY, CounterStateMachine.class, StateMachine.class);
+    }
   }
 
   @Test
@@ -119,8 +219,24 @@ public class TestLinearizableReadRepliedIndexWithGrpc
     }
   }
 
+  public static class BlockingQueryStateMachine extends CounterStateMachine {
+    private final CompletableFuture<Void> queryEntered = new CompletableFuture<>();
+    private volatile CompletableFuture<Void> queryGate;
+
+    @Override
+    public CompletableFuture<Message> query(Message request) {
+      final CompletableFuture<Void> gate = queryGate;
+      if (gate == null) {
+        return super.query(request);
+      }
+      queryEntered.complete(null);
+      return gate.thenCompose(ignored -> super.query(request));
+    }
+  }
+
   static class BlockingCode implements CodeInjectionForTesting.Code {
     private final CompletableFuture<Void> future = new CompletableFuture<>();
+    private final CompletableFuture<Void> entered = new CompletableFuture<>();
 
     void complete() {
       future.complete(null);
@@ -128,6 +244,7 @@ public class TestLinearizableReadRepliedIndexWithGrpc
 
     @Override
     public boolean execute(Object localId, Object remoteId, Object... args) {
+      entered.complete(null);
       final boolean blocked = !future.isDone();
       if (blocked) {
         LOG.info("{}: ReplyFlusher is blocked", localId, new Throwable());

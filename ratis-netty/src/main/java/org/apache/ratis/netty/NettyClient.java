@@ -35,7 +35,7 @@ import java.net.InetSocketAddress;
 public class NettyClient implements Closeable {
   private final LifeCycle lifeCycle;
   private final String serverAddress;
-  private Channel channel;
+  private volatile Channel channel;
 
   NettyClient(String serverAddress) {
     this.lifeCycle = new LifeCycle(JavaUtils.getClassSimpleName(getClass()) + "-" + serverAddress);
@@ -46,20 +46,36 @@ public class NettyClient implements Closeable {
   public void connect(EventLoopGroup group, ChannelInitializer<SocketChannel> initializer)
       throws InterruptedException {
     final InetSocketAddress address = NetUtils.createSocketAddr(serverAddress);
-    lifeCycle.startAndTransition(
-        () -> channel = new Bootstrap()
-            .group(group)
-            .channel(NettyUtils.getSocketChannelClass(group))
-            .handler(initializer)
-            .connect(address)
-            .sync()
-            .channel(),
-        InterruptedException.class);
+    lifeCycle.transition(LifeCycle.State.STARTING);
+    try {
+      final ChannelFuture future = new Bootstrap()
+          .group(group)
+          .channel(NettyUtils.getSocketChannelClass(group))
+          .handler(initializer)
+          .connect(address);
+      channel = future.channel();
+      // A close can finish before the connecting channel is published.
+      if (lifeCycle.getCurrentState().isClosingOrClosed()) {
+        NettyUtils.closeChannel(channel, serverAddress);
+      }
+      future.sync();
+      // An inbound exception can close the client while connect is completing.
+      lifeCycle.compareAndTransition(LifeCycle.State.STARTING, LifeCycle.State.RUNNING);
+    } catch (Throwable t) {
+      lifeCycle.compareAndTransition(LifeCycle.State.STARTING,
+          t instanceof InterruptedException ? LifeCycle.State.NEW : LifeCycle.State.EXCEPTION);
+      throw t;
+    }
   }
 
   @Override
   public void close() {
-    lifeCycle.checkStateAndClose(() -> NettyUtils.closeChannel(channel, serverAddress));
+    lifeCycle.checkStateAndClose(() -> {
+      final Channel current = channel;
+      if (current != null) {
+        NettyUtils.closeChannel(current, serverAddress);
+      }
+    });
   }
 
   public ChannelFuture writeAndFlush(Object msg) throws AlreadyClosedException {

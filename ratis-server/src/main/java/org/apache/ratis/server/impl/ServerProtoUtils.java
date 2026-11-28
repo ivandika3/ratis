@@ -66,16 +66,17 @@ final class ServerProtoUtils {
   }
 
   static StartLeaderElectionReplyProto toStartLeaderElectionReplyProto(
-      RaftPeerId requestorId, RaftGroupMemberId replyId, boolean success) {
+      RaftPeerId requestorId, RaftGroupMemberId replyId, boolean success, long callId) {
     return StartLeaderElectionReplyProto.newBuilder()
-        .setServerReply(toRaftRpcReplyProtoBuilder(requestorId, replyId, success))
+        .setServerReply(toRaftRpcReplyProtoBuilder(requestorId, replyId, success).setCallId(callId))
         .build();
   }
 
   static StartLeaderElectionRequestProto toStartLeaderElectionRequestProto(
       RaftGroupMemberId requestorId, RaftPeerId replyId, TermIndex lastEntry) {
     final StartLeaderElectionRequestProto.Builder b = StartLeaderElectionRequestProto.newBuilder()
-        .setServerRequest(ClientProtoUtils.toRaftRpcRequestProtoBuilder(requestorId, replyId));
+        .setServerRequest(ClientProtoUtils.toRaftRpcRequestProtoBuilder(requestorId, replyId)
+            .setCallId(CallId.getAndIncrement()));
     if (lastEntry != null) {
       b.setLeaderLastEntry(lastEntry.toProto());
     }

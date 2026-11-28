@@ -160,7 +160,11 @@ class ReadRequestHandler {
       return getReadIndex(clientId, readRequestType, leader)
           .thenCompose(readIndex -> state.getReadRequests().waitToAdvance(readIndex,
               () -> getReadExceptionIfInstallingSnapshot("local read")))
-          .thenCompose(readIndex -> stateMachine.query(queryMessage));
+          .thenCompose(readIndex -> stateMachine.query(queryMessage))
+          .thenApply(message -> {
+            server.getRole().getLeaderState().ifPresent(LeaderStateImpl::onReadCompleted);
+            return message;
+          });
     } else {
       throw new IllegalStateException("Unexpected read option: " + readOption);
     }
@@ -185,6 +189,12 @@ class ReadRequestHandler {
               () -> getReadExceptionIfInstallingSnapshot("read")))
           .thenCompose(readIndex -> isDummyRead(request)
               ? CompletableFuture.completedFuture(server.newSuccessReply(request)) : queryStateMachine(request))
+          .thenApply(reply -> {
+            if (reply.isSuccess()) {
+              server.getRole().getLeaderState().ifPresent(LeaderStateImpl::onReadCompleted);
+            }
+            return reply;
+          })
           .exceptionally(e -> readException2Reply(request, e));
     } else {
       throw new IllegalStateException("Unexpected read option: " + readOption);

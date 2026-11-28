@@ -124,6 +124,17 @@ jobs:
     secrets:
       DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
 
+  robustness:
+    if: github.event_name != 'pull_request'
+    uses: $/.github/workflows/check.yaml
+    with:
+      java-version: '17'
+      script: robustness
+      script-args: -Dratis.robustness.seed=${{ github.run_id }}
+      timeout-minutes: 30
+    secrets:
+      DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+
   coverage:
     needs:
       - build
@@ -131,6 +142,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name != 'pull_request'
+    env:
+      MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
     steps:
         - name: Checkout project
           uses: actions/checkout@v7
@@ -151,6 +164,8 @@ jobs:
           with:
             distribution: 'temurin'
             java-version: 17
+        - name: Configure Maven Central mirror
+          run: python3 dev-support/configure-maven-mirror.py
         - name: Download artifacts
           uses: actions/download-artifact@v8
           with:

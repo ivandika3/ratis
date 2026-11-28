@@ -51,6 +51,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InOrder;
 
@@ -133,6 +134,23 @@ public class TestGrpcLogAppenderCallbacks {
         new GrpcLogAppender.AppendEntriesRequest(request(callId), destination, metrics);
     request.startRequestTimer();
     pending.put(request);
+  }
+
+  @ParameterizedTest
+  @CsvSource({"SUCCESS,1,true", "INCONSISTENCY,1,true", "NOT_LEADER,1,false", "NOT_LEADER,2,false", "SUCCESS,2,false"})
+  public void testLeaseAcknowledgementRequiresCurrentTerm(AppendResult result, long term, boolean acknowledged) {
+    final GrpcLogAppender.AppendEntriesRequest request = new GrpcLogAppender.AppendEntriesRequest(
+        request(1).toBuilder().setLeaderTerm(1).build(), destination, metrics);
+    request.startRequestTimer();
+    pending.put(request);
+    clearInvocations(follower);
+    responses.onNext(AppendEntriesReplyProto.newBuilder().setResult(result).setTerm(term)
+        .setServerReply(RaftRpcReplyProto.newBuilder().setCallId(1)).build());
+    if (acknowledged) {
+      verify(follower).updateLastRespondedAppendEntriesSendTime(request.getSendTime());
+    } else {
+      verify(follower, never()).updateLastRespondedAppendEntriesSendTime(any());
+    }
   }
 
   @ParameterizedTest

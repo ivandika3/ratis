@@ -137,6 +137,7 @@ class ElectionRequestHandler {
 
   StartLeaderElectionReplyProto startLeaderElection(StartLeaderElectionRequestProto request) throws IOException {
     final RaftRpcRequestProto r = request.getServerRequest();
+    final long callId = r.getCallId();
     final RaftPeerId leaderId = RaftPeerId.valueOf(r.getRequestorId());
     final RaftGroupId leaderGroupId = ProtoUtils.toRaftGroupId(r.getRaftGroupId());
     CodeInjectionForTesting.execute(RaftServerImpl.START_LEADER_ELECTION, server.getId(), leaderId, request);
@@ -144,7 +145,7 @@ class ElectionRequestHandler {
     if (!request.hasLeaderLastEntry()) {
       // It should have a leaderLastEntry since there is a placeHolder entry.
       LOG.warn("{}: leaderLastEntry is missing in {}", getMemberId(), request);
-      return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false);
+      return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false, callId);
     }
 
     final TermIndex leaderLastEntry = TermIndex.valueOf(request.getLeaderLastEntry());
@@ -158,23 +159,23 @@ class ElectionRequestHandler {
       server.assertLifeCycleState(LifeCycle.States.STARTING_OR_RUNNING);
       final boolean recognized = state.recognizeLeader("startLeaderElection", leaderId, leaderLastEntry.getTerm());
       if (!recognized) {
-        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false);
+        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false, callId);
       }
 
       if (!server.getInfo().isFollower()) {
         LOG.warn("{} refused StartLeaderElectionRequest from {}, because role is:{}",
             getMemberId(), leaderId, server.getRole().getCurrentRole());
-        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false);
+        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false, callId);
       }
 
       if (ServerState.compareLog(state.getLastEntry(), leaderLastEntry) < 0) {
         LOG.warn("{} refused StartLeaderElectionRequest from {}, because lastEntry:{} less than leaderEntry:{}",
             getMemberId(), leaderId, leaderLastEntry, state.getLastEntry());
-        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false);
+        return toStartLeaderElectionReplyProto(leaderId, getMemberId(), false, callId);
       }
 
       server.changeToCandidate(true);
-      return toStartLeaderElectionReplyProto(leaderId, getMemberId(), true);
+      return toStartLeaderElectionReplyProto(leaderId, getMemberId(), true, callId);
     }
   }
 }

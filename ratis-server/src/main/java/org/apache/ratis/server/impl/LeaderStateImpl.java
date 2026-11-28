@@ -51,6 +51,7 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.LogEntryHeader;
 import org.apache.ratis.server.raftlog.LogProtoUtils;
 import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.server.raftlog.RaftLogIndex;
 import org.apache.ratis.server.util.ServerStringUtils;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.util.CodeInjectionForTesting;
@@ -359,6 +360,7 @@ class LeaderStateImpl implements LeaderState {
   private final LeaderTracer leaderTracer;
 
   private final ReadIndexHeartbeats readIndexHeartbeats;
+  private final RaftLogIndex lastReadIndex = new RaftLogIndex("lastReadIndex", RaftLog.INVALID_LOG_INDEX);
   private final RaftServerConfigKeys.Read.ReadIndex.Type readIndexType;
   private final Supplier<Long> readIndexSupplier;
   private final boolean leaderHeartbeatCheckEnabled;
@@ -403,19 +405,21 @@ class LeaderStateImpl implements LeaderState {
     }
 
     this.readIndexType = RaftServerConfigKeys.Read.ReadIndex.type(properties);
+    final Supplier<Long> supplier;
     switch (readIndexType) {
     case REPLIED_INDEX:
       this.replyFlusher = new ReplyFlusher(server.getId(), state.getLastAppliedIndex(),
           RaftServerConfigKeys.Read.ReadIndex.repliedIndexBatchInterval(properties));
-      readIndexSupplier = replyFlusher::getRepliedIndex;
+      supplier = replyFlusher::getRepliedIndex;
       break;
     case APPLIED_INDEX:
-      readIndexSupplier = () -> server.getState().getLastAppliedIndex();
+      supplier = () -> server.getState().getLastAppliedIndex();
       break;
     case COMMIT_INDEX:
     default:
-      readIndexSupplier = () -> server.getRaftLog().getLastCommittedIndex();
+      supplier = () -> server.getRaftLog().getLastCommittedIndex();
     }
+    readIndexSupplier = () -> Math.max(supplier.get(), lastReadIndex.get());
     this.leaderHeartbeatCheckEnabled = RaftServerConfigKeys.Read
         .leaderHeartbeatCheckEnabled(properties);
 
@@ -1185,10 +1189,17 @@ class LeaderStateImpl implements LeaderState {
     return false;
   }
 
+  void onReadCompleted() {
+    // A query can expose committed writes whose write replies (or application futures) are still pending.
+    // Publish a bound after the query completes, before its result can cause a later read on another server.
+    lastReadIndex.updateToMax(raftLog.getLastCommittedIndex(), info -> LOG.debug("{}: {}", name, info));
+  }
+
   /**
    * Obtain the current readIndex for read only requests. See Raft paper section 6.4.
    * 1. Leader makes sure at least one log from current term is committed.
    * 2. Leader record last committed index or applied index or replied index (depending on configuration) as readIndex.
+   *    Preserve any higher index published by an earlier completed query.
    * 3. Leader broadcast heartbeats to followers and waits for acknowledgements.
    * 4. If majority respond success, returns readIndex.
    * @return current readIndex.
@@ -1223,11 +1234,6 @@ class LeaderStateImpl implements LeaderState {
     // send heartbeats and wait for majority acknowledgments
     final AppendEntriesListener listener = readIndexHeartbeats.addAppendEntriesListener(
         readIndex, i -> new AppendEntriesListener(i, senders));
-
-    // the readIndex is already acknowledged before
-    if (listener == null) {
-      return CompletableFuture.completedFuture(readIndex);
-    }
 
     return listener.getFuture();
   }

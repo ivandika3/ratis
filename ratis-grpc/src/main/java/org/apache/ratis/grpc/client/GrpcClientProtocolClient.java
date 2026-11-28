@@ -96,7 +96,9 @@ public class GrpcClientProtocolClient implements Closeable {
   private final RaftClientProtocolServiceStub asyncStub;
   private final AdminProtocolServiceBlockingStub adminBlockingStub;
 
-  private final AtomicReference<AsyncStreamObservers> orderedStreamObservers = new AtomicReference<>();
+  private final AtomicReference<AsyncStreamObservers> orderedLeaderStreamObservers = new AtomicReference<>();
+
+  private final AtomicReference<AsyncStreamObservers> orderedServerStreamObservers = new AtomicReference<>();
 
   private final AtomicReference<AsyncStreamObservers> unorderedStreamObservers = new AtomicReference<>();
   private final MetricClientInterceptor metricClientInterceptor;
@@ -163,7 +165,8 @@ public class GrpcClientProtocolClient implements Closeable {
 
   @Override
   public void close() {
-    Optional.ofNullable(orderedStreamObservers.getAndSet(null)).ifPresent(AsyncStreamObservers::close);
+    Optional.ofNullable(orderedLeaderStreamObservers.getAndSet(null)).ifPresent(AsyncStreamObservers::close);
+    Optional.ofNullable(orderedServerStreamObservers.getAndSet(null)).ifPresent(AsyncStreamObservers::close);
     Optional.ofNullable(unorderedStreamObservers.getAndSet(null)).ifPresent(AsyncStreamObservers::close);
     GrpcUtil.shutdownManagedChannel(clientChannel, channelShutdownGracefulTimeout, channelShutdownForcefulTimeout);
     if (clientChannel != adminChannel) {
@@ -245,8 +248,11 @@ public class GrpcClientProtocolClient implements Closeable {
         .unordered(responseHandler);
   }
 
-  AsyncStreamObservers getOrderedStreamObservers() {
-    return orderedStreamObservers.updateAndGet(
+  AsyncStreamObservers getOrderedStreamObservers(boolean toLeader) {
+    // OrderedAsync has independent sequence windows for the Raft service and explicit server targets.
+    final AtomicReference<AsyncStreamObservers> observers = toLeader?
+        orderedLeaderStreamObservers : orderedServerStreamObservers;
+    return observers.updateAndGet(
         a -> a != null? a : new AsyncStreamObservers(this::ordered));
   }
 

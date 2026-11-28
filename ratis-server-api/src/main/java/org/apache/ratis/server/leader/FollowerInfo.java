@@ -113,10 +113,10 @@ public interface FollowerInfo {
   /** @return the latest heartbeat send time. */
   Timestamp getLastHeartbeatSendTime();
 
-  /** @return the send time of last responded rpc */
+  /** @return the send time of the last AppendEntries acknowledged in the request's leader term. */
   Timestamp getLastRespondedAppendEntriesSendTime();
 
-  /** Update lastRpcResponseTime and LastRespondedAppendEntriesSendTime */
+  /** Record the send time of an AppendEntries acknowledged in the request's leader term. */
   void updateLastRespondedAppendEntriesSendTime(Timestamp sendTime);
 
   /** @return the error state. */

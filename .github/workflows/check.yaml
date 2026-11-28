@@ -84,6 +84,7 @@ on:
 env:
   MAVEN_ARGS: --batch-mode --show-version
   MAVEN_OPTS: -Daether.connector.http.connectionMaxTtl=25 -Daether.connector.http.retryHandler.count=5 -Daether.connector.http.retryHandler.intervalMax=30000
+  MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
   SCRIPT: ${{ inputs.script }}
   WITH_COVERAGE: ${{ github.event_name == 'push' }}
 
@@ -159,6 +160,40 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ inputs.java-version }}
+
+      - name: Setup Go for robustness checker
+        if: ${{ inputs.script == 'robustness' }}
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: dev-support/linearizability-checker/go.sum
+
+      - name: Cache Maven wrapper distribution
+        if: ${{ inputs.script != 'author' }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2/wrapper/dists
+          key: maven-wrapper-google-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
+
+      - name: Configure Maven Central mirror
+        if: ${{ inputs.script != 'author' }}
+        run: python3 dev-support/configure-maven-mirror.py
+
+      - name: Prepare Maven wrapper
+        if: ${{ inputs.script != 'author' }}
+        run: |
+          for attempt in 1 2 3; do
+            if ./mvnw --version; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            echo "Maven wrapper startup failed; retrying in 5 seconds (attempt $attempt of 3)."
+            sleep 5
+          done
+        env:
+          MVNW_VERBOSE: true
 
       - name: Execute tests
         run: |

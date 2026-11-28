@@ -107,6 +107,20 @@ public abstract class LinearizableReadTests<CLUSTER extends MiniRaftCluster>
   }
 
   @Test
+  public void testOrderedReadToExplicitLeader() throws Exception {
+    runWithNewCluster(1, cluster -> {
+      final RaftPeerId leader = RaftTestUtil.waitForLeader(cluster).getId();
+      try (RaftClient client = cluster.createClient(RetryPolicies.noRetry())) {
+        for (int i = 1; i <= 5; i++) {
+          assertReplyExact(i, client.async().send(INCREMENT).get(5, TimeUnit.SECONDS));
+          assertReplyExact(i, client.async().sendReadOnly(QUERY, leader).get(5, TimeUnit.SECONDS));
+          assertReplyExact(i, client.async().sendReadOnly(QUERY).get(5, TimeUnit.SECONDS));
+        }
+      }
+    });
+  }
+
+  @Test
   public void testLinearizableReadTimeout() throws Exception {
     runWithNewCluster(cluster -> ReadOnlyRequestTests.runTestReadTimeout(ReadIndexException.class, cluster));
   }

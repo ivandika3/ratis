@@ -18,7 +18,12 @@
 # Requires _install_tool from _lib.sh.  Use `source` for both scripts, because it modifies $PATH.
 
 _get_spotbugs_version() {
-  MAVEN_ARGS='' ${MVN} -q -DforceStdout -Dscan=false help:evaluate -Dexpression=spotbugs.version 2>/dev/null || echo '4.8.6'
+  local version
+  if version="$(MAVEN_ARGS='' "${MVN}" -q -DforceStdout -Dscan=false help:evaluate -Dexpression=spotbugs.version 2>/dev/null)"; then
+    printf '%s\n' "$version"
+  else
+    printf '%s\n' '4.8.6'
+  fi
 }
 
 if [[ -z "${SPOTBUGS_VERSION:-}" ]]; then
@@ -26,8 +31,10 @@ if [[ -z "${SPOTBUGS_VERSION:-}" ]]; then
 fi
 
 _install_spotbugs() {
-  echo "https://repo.maven.apache.org/maven2/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz"
-  curl -LSs "https://repo.maven.apache.org/maven2/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz" | tar -xz -f - || exit 1
+  local repository="${MVNW_REPOURL:-https://repo.maven.apache.org/maven2}"
+  local url="${repository%/}/com/github/spotbugs/spotbugs/${SPOTBUGS_VERSION}/spotbugs-${SPOTBUGS_VERSION}.tgz"
+  echo "$url"
+  curl -fLSs "$url" | tar -xz -f - || exit 1
   find "spotbugs-${SPOTBUGS_VERSION}"/bin -type f -print0 | xargs -0 --no-run-if-empty chmod +x
 }
 

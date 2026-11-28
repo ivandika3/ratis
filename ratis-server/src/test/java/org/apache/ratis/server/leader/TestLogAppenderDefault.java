@@ -19,25 +19,96 @@ package org.apache.ratis.server.leader;
 
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto;
+import org.apache.ratis.proto.RaftProtos.AppendEntriesReplyProto.AppendResult;
+import org.apache.ratis.proto.RaftProtos.AppendEntriesRequestProto;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.RaftServerRpc;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.statemachine.StateMachine;
 import org.apache.ratis.util.Timestamp;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongUnaryOperator;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class TestLogAppenderDefault {
   private static final RaftPeerId FOLLOWER_ID = RaftPeerId.valueOf("follower");
+
+  @Test
+  @Timeout(10)
+  void higherTermRejectionDoesNotRenewLeaderLease() throws Exception {
+    assertLeaseAcknowledgement(AppendResult.NOT_LEADER, 2, false);
+  }
+
+  @Test
+  @Timeout(10)
+  void sameTermRejectionDoesNotRenewLeaderLease() throws Exception {
+    assertLeaseAcknowledgement(AppendResult.NOT_LEADER, 1, false);
+  }
+
+  @Test
+  @Timeout(10)
+  void sameTermSuccessRenewsLeaderLease() throws Exception {
+    assertLeaseAcknowledgement(AppendResult.SUCCESS, 1, true);
+  }
+
+  @Test
+  @Timeout(10)
+  void sameTermInconsistencyRenewsLeaderLease() throws Exception {
+    assertLeaseAcknowledgement(AppendResult.INCONSISTENCY, 1, true);
+  }
+
+  private static void assertLeaseAcknowledgement(AppendResult result, long term, boolean renewsLease) throws Exception {
+    final LeaderState leaderState = mock(LeaderState.class);
+    final TestFollowerInfo follower = new TestFollowerInfo(8, 4);
+    final Timestamp acknowledged = follower.getLastRespondedAppendEntriesSendTime();
+    final LogAppenderDefault appender = spy(newLogAppender(leaderState, follower));
+    final RaftServerRpc rpc = mock(RaftServerRpc.class);
+    when(appender.getServer().getRaftServer().getServerRpc()).thenReturn(rpc);
+    final AppendEntriesRequestProto request = AppendEntriesRequestProto.newBuilder().setLeaderTerm(1).build();
+    final AppendEntriesReplyProto reply = AppendEntriesReplyProto.newBuilder()
+        .setResult(result).setTerm(term).setNextIndex(8).build();
+    when(rpc.appendEntries(any())).thenReturn(reply);
+    final AtomicBoolean running = new AtomicBoolean(true);
+    doAnswer(invocation -> running.get()).when(appender).isRunning();
+    doReturn(true).when(appender).shouldSendAppendEntries();
+    doReturn(null).when(appender).shouldInstallSnapshot();
+    doReturn(request).when(appender).newAppendEntriesRequest(anyLong(), anyBoolean());
+    doAnswer(invocation -> {
+      running.set(false);
+      return null;
+    }).when(leaderState).onAppendEntriesReply(appender, reply);
+
+    appender.run();
+
+    if (renewsLease) {
+      Assertions.assertTrue(follower.getLastRespondedAppendEntriesSendTime().compareTo(acknowledged) > 0,
+          "A follower accepting the current term must provide a new timestamp for lease renewal");
+    } else {
+      Assertions.assertEquals(acknowledged, follower.getLastRespondedAppendEntriesSendTime(),
+          "A rejected AppendEntries must not provide a new timestamp for renewing the old leader's lease");
+    }
+    verify(rpc).appendEntries(request);
+    if (result == AppendResult.NOT_LEADER) {
+      verify(leaderState).onFollowerTerm(follower, term);
+    }
+  }
 
   @Test
   void heartbeatSuccessAdvancesOnlyToRequestPreviousIndex() {
@@ -162,6 +233,7 @@ class TestLogAppenderDefault {
     private long matchIndex;
     private long nextIndex;
     private long snapshotIndex;
+    private Timestamp lastRespondedAppendEntriesSendTime = Timestamp.currentTime().addTimeMs(-10000);
 
     private TestFollowerInfo(long nextIndex, long matchIndex) {
       this.nextIndex = nextIndex;
@@ -300,11 +372,12 @@ class TestLogAppenderDefault {
 
     @Override
     public Timestamp getLastRespondedAppendEntriesSendTime() {
-      return Timestamp.currentTime();
+      return lastRespondedAppendEntriesSendTime;
     }
 
     @Override
     public void updateLastRespondedAppendEntriesSendTime(Timestamp sendTime) {
+      lastRespondedAppendEntriesSendTime = sendTime;
     }
 
     @Override
